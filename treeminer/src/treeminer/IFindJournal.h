@@ -25,6 +25,15 @@ public:
     virtual std::vector<FindRecord> fetchEligible(const std::string& now_utc,
                                                   std::size_t limit) = 0;
 
+    // Oldest-first AcceptedUnconfirmed rows whose next_attempt_at is null or <= now_utc, so
+    // /get_block confirmation can be retried after a transient lookup failure (contract v1.1;
+    // closes the re-drive gap where such rows were unreachable through the interface).
+    virtual std::vector<FindRecord> fetchAwaitingConfirmation(const std::string& now_utc,
+                                                              std::size_t limit) = 0;
+
+    // Single-record lookup for stats and tests (contract v1.1).
+    virtual std::optional<FindRecord> getById(std::int64_t id) = 0;
+
     // Persist the outcome of one submission attempt (status, reason, attempt bookkeeping,
     // backoff time, http status/response, confirmation timestamp for Acked).
     virtual void recordAttempt(std::int64_t id, const Classification& c,
@@ -54,7 +63,8 @@ public:
 
     // Counters for the stats endpoint.
     struct Counts {
-        std::size_t pending = 0, parked = 0, quarantined = 0, acked_total = 0, dead_total = 0;
+        std::size_t pending = 0, parked = 0, quarantined = 0, acked_total = 0, dead_total = 0,
+                    accepted_unconfirmed = 0, permanently_invalid = 0;  // v1.1
     };
     virtual Counts counts() = 0;
 };
