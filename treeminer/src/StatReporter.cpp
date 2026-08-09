@@ -4,6 +4,7 @@
 #include <sstream>
 #include <iomanip>
 #include <chrono>
+#include <thread>
 #include <algorithm>
 #include <nvml.h>
 #include "HttpClient.h"

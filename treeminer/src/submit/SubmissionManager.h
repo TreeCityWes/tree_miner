@@ -64,8 +64,10 @@ public:
     using MonotonicClock = std::function<std::int64_t()>;  // ms
     using WallClock = std::function<std::int64_t()>;       // epoch ms, UTC
 
-    // Default clocks (std::chrono) are used when null.
-    SubmissionManager(IFindJournal& journal, ITransport& transport, Config cfg = Config{},
+    // Default clocks (std::chrono) are used when null. Split constructors instead of
+    // `Config cfg = Config{}`: GCC rejects that default argument inside the enclosing class.
+    SubmissionManager(IFindJournal& journal, ITransport& transport);
+    SubmissionManager(IFindJournal& journal, ITransport& transport, Config cfg,
                       MonotonicClock monotonic = nullptr, WallClock wall = nullptr);
     ~SubmissionManager();
 

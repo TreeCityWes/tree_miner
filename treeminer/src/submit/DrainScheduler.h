@@ -41,7 +41,10 @@ public:
         std::int64_t xuni_preempt_window_ms = 120000;  // "near window end" threshold
     };
 
-    explicit DrainScheduler(Config cfg = Config{});
+    // Two constructors instead of `Config cfg = Config{}`: GCC rejects a default argument
+    // that requires the nested struct's member initializers inside the enclosing class.
+    DrainScheduler();
+    explicit DrainScheduler(Config cfg);
 
     // Pick the next record to submit from the journal's oldest-first eligible slice.
     // Returns nullptr when nothing should be submitted now (empty, or only closed-window

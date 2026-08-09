@@ -4,6 +4,8 @@
 
 namespace treeminer {
 
+DrainScheduler::DrainScheduler() : DrainScheduler(Config{}) {}
+
 DrainScheduler::DrainScheduler(Config cfg) : cfg_(cfg), rate_per_s_(cfg.start_rate_per_s) {
     if (rate_per_s_ <= 0.0) {
         rate_per_s_ = 1.0;

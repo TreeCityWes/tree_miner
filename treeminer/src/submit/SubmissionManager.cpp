@@ -153,6 +153,9 @@ XuniWindowState SubmissionManager::xuniWindowAt(std::int64_t server_epoch_ms) {
 
 // --- construction / threading ---
 
+SubmissionManager::SubmissionManager(IFindJournal& journal, ITransport& transport)
+    : SubmissionManager(journal, transport, Config{}) {}
+
 SubmissionManager::SubmissionManager(IFindJournal& journal, ITransport& transport, Config cfg,
                                      MonotonicClock monotonic, WallClock wall)
     : journal_(journal),

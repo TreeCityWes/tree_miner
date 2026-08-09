@@ -51,9 +51,14 @@ if(XENBLOCKS_BUILD_MINER)
         message(FATAL_ERROR "Boost.Program_options not found. Please install Boost.Program_options.")
     endif()
 
-    find_package(unofficial-secp256k1 CONFIG REQUIRED)
-    if(NOT unofficial-secp256k1_FOUND)
-        message(FATAL_ERROR "Libsecp256k1 not found. Please install Libsecp256k1.")
+    # Older vcpkg ports export unofficial-secp256k1; current ones ship upstream's
+    # libsecp256k1 config. Accept either.
+    find_package(unofficial-secp256k1 CONFIG QUIET)
+    if(unofficial-secp256k1_FOUND)
+        set(XENBLOCKS_SECP256K1_TARGETS unofficial::secp256k1 unofficial::secp256k1_precomputed)
+    else()
+        find_package(libsecp256k1 CONFIG REQUIRED)
+        set(XENBLOCKS_SECP256K1_TARGETS libsecp256k1::secp256k1)
     endif()
 
     find_package(Crow CONFIG REQUIRED)
@@ -94,7 +99,7 @@ if(XENBLOCKS_BUILD_MINER)
     if(NOT nlohmann_json_FOUND)
         message(FATAL_ERROR "nlohmann_json library not found. Please install nlohmann_json.")
     endif()
-    list(APPEND LINK_LIBRARIES CUDA::nvml unofficial::argon2::libargon2 cryptopp::cryptopp cpr::cpr nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto Boost::program_options unofficial::secp256k1 unofficial::secp256k1_precomputed Crow::Crow ${XENBLOCKS_PAHO_MQTT_CPP_TARGET})
+    list(APPEND LINK_LIBRARIES CUDA::nvml unofficial::argon2::libargon2 cryptopp::cryptopp cpr::cpr nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto Boost::program_options ${XENBLOCKS_SECP256K1_TARGETS} Crow::Crow ${XENBLOCKS_PAHO_MQTT_CPP_TARGET})
 endif()
 
 # TreeMiner components: durable journal + submission stack (contract in src/treeminer/).
