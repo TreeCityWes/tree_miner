@@ -1,0 +1,127 @@
+{
+    "version": 3,
+    "configurePresets": [
+        {
+            "name": "ninja-multi-vcpkg",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "toolchainFile": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake"
+        },
+        {
+            "name": "cuda-release-vcpkg-modern",
+            "displayName": "CUDA Release with modern architecture set",
+            "description": "Release full-miner build for benchmark runs on modern CUDA GPUs.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-cuda-modern",
+            "toolchainFile": "${sourceDir}/vcpkg/scripts/buildsystems/vcpkg.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "XENBLOCKS_BUILD_MINER": "ON",
+                "CUDAToolkit_ROOT": "$env{CUDA_PATH_V12_8}",
+                "CMAKE_CUDA_COMPILER": "$env{CUDA_PATH_V12_8}/bin/nvcc.exe",
+                "CMAKE_CUDA_ARCHITECTURES": "75;80;86;89;90"
+            }
+        },
+        {
+            "name": "cuda-release-vcpkg-sm75",
+            "displayName": "CUDA Release for sm_75",
+            "description": "Release full-miner build for Turing-class CUDA GPUs.",
+            "inherits": "cuda-release-vcpkg-modern",
+            "binaryDir": "${sourceDir}/build-cuda-sm75",
+            "cacheVariables": {
+                "CMAKE_CUDA_ARCHITECTURES": "75"
+            }
+        },
+        {
+            "name": "cuda-release-vcpkg-sm86",
+            "displayName": "CUDA Release for sm_86",
+            "description": "Release full-miner build for Ampere-class CUDA GPUs.",
+            "inherits": "cuda-release-vcpkg-modern",
+            "binaryDir": "${sourceDir}/build-cuda-sm86",
+            "cacheVariables": {
+                "CMAKE_CUDA_ARCHITECTURES": "86"
+            }
+        },
+        {
+            "name": "cuda-release-vcpkg-sm89",
+            "displayName": "CUDA Release for sm_89",
+            "description": "Release full-miner build for Ada-class CUDA GPUs.",
+            "inherits": "cuda-release-vcpkg-modern",
+            "binaryDir": "${sourceDir}/build-cuda-sm89",
+            "cacheVariables": {
+                "CMAKE_CUDA_ARCHITECTURES": "89"
+            }
+        },
+        {
+            "name": "cuda-release-vcpkg-sm90",
+            "displayName": "CUDA Release for sm_90",
+            "description": "Release full-miner build for Hopper-class CUDA GPUs.",
+            "inherits": "cuda-release-vcpkg-modern",
+            "binaryDir": "${sourceDir}/build-cuda-sm90",
+            "cacheVariables": {
+                "CMAKE_CUDA_ARCHITECTURES": "90"
+            }
+        },
+        {
+            "name": "hashapi-cli-mingw",
+            "generator": "MinGW Makefiles",
+            "binaryDir": "${sourceDir}/build-hashapi",
+            "cacheVariables": {
+                "XENBLOCKS_BUILD_MINER": "OFF",
+                "XENBLOCKS_BUILD_HASHAPI_CLI": "ON"
+            }
+        },
+        {
+            "name": "hashapi-cli-smoke-mingw",
+            "generator": "MinGW Makefiles",
+            "binaryDir": "${sourceDir}/build-hashapi-smoke",
+            "cacheVariables": {
+                "XENBLOCKS_BUILD_MINER": "OFF",
+                "XENBLOCKS_BUILD_HASHAPI_CLI": "ON",
+                "XENBLOCKS_HASHAPI_STUB_BACKEND": "ON"
+            }
+        }
+    ],
+    "buildPresets": [
+        {
+            "name": "ninja-vcpkg-debug",
+            "configurePreset": "ninja-multi-vcpkg",
+            "configuration": "Debug"
+        },
+        {
+            "name": "ninja-vcpkg-release",
+            "configurePreset": "ninja-multi-vcpkg",
+            "configuration": "Release"
+        },
+        {
+            "name": "cuda-release-vcpkg-modern",
+            "configurePreset": "cuda-release-vcpkg-modern"
+        },
+        {
+            "name": "cuda-release-vcpkg-sm75",
+            "configurePreset": "cuda-release-vcpkg-sm75"
+        },
+        {
+            "name": "cuda-release-vcpkg-sm86",
+            "configurePreset": "cuda-release-vcpkg-sm86"
+        },
+        {
+            "name": "cuda-release-vcpkg-sm89",
+            "configurePreset": "cuda-release-vcpkg-sm89"
+        },
+        {
+            "name": "cuda-release-vcpkg-sm90",
+            "configurePreset": "cuda-release-vcpkg-sm90"
+        },
+        {
+            "name": "hashapi-cli-mingw",
+            "configurePreset": "hashapi-cli-mingw",
+            "configuration": "Release"
+        },
+        {
+            "name": "hashapi-cli-smoke-mingw",
+            "configurePreset": "hashapi-cli-smoke-mingw",
+            "configuration": "Release"
+        }
+    ]
+}

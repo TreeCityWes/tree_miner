@@ -1,6 +1,8 @@
-# TreeMiner — Comprehensive Build Plan
+# TreeMiner — Comprehensive Build Plan (v2)
 
-**Status: PLANNING — no code exists yet. This document is for review before any implementation.**
+**Status: IMPLEMENTATION AUTHORITY — build phase active.** v2 incorporates the adopted amendments
+from the three reviews (KIMMY-PLAN.md, GROK-RECOMMENDATIONS.md, SOL-PLAN.md), all verified against
+code. **§10 below supersedes conflicting v1 text.**
 
 TreeMiner is a new XenBlocks miner derived from the three studied projects, whose defining
 feature is outage-proof submission: no found hash is ever lost to a server disconnect, crash,
@@ -199,3 +201,63 @@ All optional; defaults reproduce safe behavior. Existing Woody config keys uncha
 3. Single journal per process vs per-GPU journals for multi-process rigs (xgpu pattern)?
 4. Keep or strip telemetry/MQTT/marketplace subsystems in the Phase 1 fork?
 5. Is the 4/s drain default right, given unknown server capacity after recovery?
+
+---
+
+## 10. v2 amendments (ADOPTED — supersede conflicting text above)
+
+All verified in code before adoption. Shared types live in `src/treeminer/Types.h` (authoritative
+for the journal/submitter contract).
+
+1. **Immutable `FoundPayload` at discovery (Phase 1 step zero).** Upstream re-hashes with
+   current difficulty at submit time and silently drops on mismatch (`main.cpp:371-381` — verified
+   race). TreeMiner constructs the full PHC string once from the batch's actual parameters; the
+   submission path never recomputes Argon2. Also delete the duplicate CPU re-verify
+   (`main.cpp:364-378`).
+2. **Confirmation-aware acks.** Server returns 200 even when its DB insert failed
+   (`gpage.py:492-494,515` — verified). `200 → AcceptedUnconfirmed`, then confirm via
+   `GET /get_block?key=` (`gpage.py:331` — verified) → `Acked`. Duplicate ("already exists")
+   likewise confirmed by lookup. If lookup unavailable, remain AcceptedUnconfirmed with metrics.
+3. **Richer state machine** (see Types.h): `Quarantined` (unknown 4xx — never auto-unparks)
+   split from `ParkedDifficulty`; `PermanentlyInvalid` for malformed/verify-failed
+   (server string "Hash verification failed." → PermanentlyInvalid, `gpage.py:519`);
+   `ParkedXuniWindow` replaces instant-dead XUNI (see #5).
+4. **Classifier additions:** 401 difficulty message embeds current difficulty in
+   `m={N}` (`gpage.py:416` — verified) → parse into `server_difficulty_hint`. 429 honors
+   Retry-After. Both real server rejection strings ("XUNI Submitted outside of proper time
+   frame.", "XUNI found outside of time window") are explicit test cases; substring matching is
+   fallback after structured parse.
+5. **XUNI scheduling corrected:** server gates XUNI on its own clock only — nothing binds a XUNI
+   to the hour it was found (verified), so missed XUNIs park for up to `xuni_max_windows`
+   (default 3) subsequent windows. Near an open window's end, eligible XUNI **preempts** XEN11;
+   backlog order otherwise: oldest XEN11 first (ascending-`m` first when difficulty trend is
+   rising). Track server-clock offset from HTTP `Date` headers; while eligible XUNI exists, cap
+   breaker probe intervals at ~5 s.
+6. **Adaptive drain** replaces fixed rate: start 1/s on breaker close, double per healthy
+   round-trip, halve on 5xx/429; `drain_rate` config is the ceiling. Separate breaker health for
+   `/verify` vs `/difficulty` (half-open probes use a real queued submission).
+7. **Difficulty policy during outage:** keep mining at last-known difficulty + margin; margin
+   presets `aggressive/balanced/resilient/auto` where `auto` raises margin only while the breaker
+   is open or backlog exists (no healthy-state hashrate tax). Persist difficulty observations
+   (`difficulty_seen` table) so startup recovery can drain immediately on last-known state.
+8. **Keygen hardening:** replace 32-bit-seeded `mt19937` (`RandomHexKeyGenerator.h:15-17` —
+   verified) with per-device 128-bit boot nonce + monotonic counter → collision-safe keys at
+   fleet scale.
+9. **Rulings on §9:** WAL + `synchronous=FULL` (+ finite `busy_timeout`); parked records never
+   auto-expire (prune only terminal states by policy; default acked >30 d); one journal per
+   process, never shared/NFS; strip MQTT/marketplace/dev-fee/telemetry from the Phase 1 binary
+   (HiveOS local stats stay); `/send_pow` is never journaled (best-effort only, currently dead
+   code upstream).
+10. **Kernel-plan notes:** device-side finalize previously failed upstream on output-buffer
+    lifetime (ledger 246-251, 834) — Phase 2 retry requires the fixed-capacity persistent
+    hit-buffer ownership model. Multi-warp-per-block remains a candidate (the rejected upstream
+    experiment was `__launch_bounds__`, a different lever) but requires Nsight occupancy evidence
+    before implementation. Extra Phase 3 candidates: 128-bit vectorized block load/store,
+    fused/persistent kernel, L2 persistence + cross-hash step alignment (bounded experiments,
+    ledger-recorded).
+11. **Metrics additions:** `expired_by_difficulty`, `xuni_window_miss/recovered`,
+    `reconciled_via_get_block`, `journal_insert_ms_p99`, `drain_rate_current`, `breaker_state`,
+    and accepted-yield (eligible/accepted H/s) alongside raw H/s.
+12. **Positioning:** competitors already advertise SQLite queues; TreeMiner's claims are the
+    verified extras — immutable payloads, confirmed acks, crash-safe ambiguity handling,
+    server-clock-aware XUNI recovery, transparent accepted-yield.
