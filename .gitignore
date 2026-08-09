@@ -1,0 +1,15 @@
+# External repo clones for research — not part of this project's source
+repos/
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Build output
+build/
+dist/
