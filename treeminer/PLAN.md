@@ -261,3 +261,68 @@ for the journal/submitter contract).
 12. **Positioning:** competitors already advertise SQLite queues; TreeMiner's claims are the
     verified extras — immutable payloads, confirmed acks, crash-safe ambiguity handling,
     server-clock-aware XUNI recovery, transparent accepted-yield.
+
+---
+
+## 11. Stats delivery (miner-hosted JSON API + dashboard) — ADOPTED
+
+Build on the existing Crow server (`src/LocalServer.cpp`, currently hardcoded `:42069` with
+`/stats` and `/platform/status`). The upstream Vite/TS `web/` app is marketplace UI — excluded
+from Phase 1; the dashboard is a single self-contained static page instead.
+
+### 11.1 Configuration
+
+```
+stats_enabled = true
+stats_bind    = 127.0.0.1   # default local-only; set 0.0.0.0 to expose on LAN
+stats_port    = 42069       # configurable (replaces hardcoded value)
+stats_token   =             # optional; when set, non-localhost requests require
+                            # Authorization: Bearer <token>
+```
+
+Security stance: no auth by default but bound to localhost by default. Exposing beyond LAN is
+the operator's job (reverse proxy); README says so explicitly. The endpoint is read-only —
+wallet address appears in stats (it's public on-chain anyway), but no keys/config are served.
+
+### 11.2 JSON API
+
+- `GET /api/summary` — hashrate (raw + accepted-yield), current difficulty + margin in effect,
+  blocks found by kind (normal/super/XUNI), uptime, version.
+- `GET /api/gpus` — per-GPU: model, hashrate, batch size, memory in use, last batch latency
+  (extends the existing `/stats` payload; `/stats` kept as alias for HiveOS compatibility).
+- `GET /api/journal` — pending / parked_difficulty / parked_xuni / quarantined / acked / dead
+  counts, oldest-pending age, last-ack time, `journal_insert_ms_p99`.
+- `GET /api/server` — breaker state (up/down/half-open), consecutive-failure count, current
+  probe interval, cumulative downtime, per-endpoint latency, server-clock offset estimate,
+  last difficulty observation (+age), drain_rate_current.
+- `GET /api/finds?limit=50` — recent finds: kind, m, found_at, status, attempts, last_response
+  (truncated). The "did my block make it" question, answerable at a glance.
+- `GET /api/history` — in-memory ring buffer (~24 h at 30 s samples) of hashrate, difficulty,
+  journal depth, breaker state — powers dashboard charts; no DB reads on the hot path.
+- `GET /metrics` — Prometheus text format mirroring the above (fleet Grafana for free).
+- Existing `/platform/status` removed with the marketplace strip.
+
+All handlers read from an in-memory `StatsRegistry` (atomic counters + ring buffer) fed by the
+engine, journal, and submitter; journal COUNT queries run on a 5 s cache, never per-request.
+
+### 11.3 Dashboard (`GET /`)
+
+One static, self-contained HTML file (inline CSS/JS, **zero external CDN/fonts** — the dashboard
+must render on a rig whose upstream network is down, which is exactly when the operator looks).
+Embedded in the binary at build time (string resource) so there is nothing to install. Polls the
+JSON API every 2–5 s. Content, in order of prominence:
+
+1. **Outage banner** — the product's showcase moment: green "connected" strip normally; when the
+   breaker is open, a bold amber banner: "Server unreachable for 12m — mining continues,
+   **37 finds safely queued**, next probe in 40 s." Zero-loss made visible.
+2. Hashrate hero number + 24 h sparkline; accepted-yield beside raw.
+3. Per-GPU tiles (hashrate, batch, memory).
+4. Journal panel: state counts + recent-finds table with status chips.
+5. Difficulty chart with margin overlay; block-found event markers.
+
+### 11.4 Delivery & ownership
+
+Phase 1 deliverable (integration lead), after journal/submitter wiring: port/bind/token config
+plumbed through AppConfig, StatsRegistry, API routes, dashboard page, Prometheus mirror.
+Chaos-test addition: dashboard/API stay live and truthful while the mock server is down (the
+stats server must never share fate with the submitter thread).
