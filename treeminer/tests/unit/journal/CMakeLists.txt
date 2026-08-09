@@ -29,7 +29,14 @@ endif()
 # directory-scoped.
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
-add_executable(treeminer_journal_tests FindJournalTests.cpp)
+# src/treeminer/Types.cpp is the single defining TU for treeminer::to_string (contract
+# v1.1, integration-lead-owned); each test binary compiles it in rather than defining
+# the symbols itself. Direct .obj definitions take precedence at link, so this stays
+# safe even if a future root-level library also carries Types.cpp.
+add_executable(treeminer_journal_tests
+    FindJournalTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/treeminer/Types.cpp
+)
 target_link_libraries(treeminer_journal_tests
     PRIVATE treeminer_journal unofficial::sqlite3::sqlite3)
 
@@ -42,6 +49,8 @@ set(TREEMINER_JOURNAL_TEST_CASES
     unpark_for_difficulty_boundary
     unpark_xuni_budget_exhaustion
     recover_on_startup_counts
+    fetch_awaiting_confirmation
+    get_by_id_hit_and_miss
     difficulty_seen_round_trip
     reopen_persistence
 )

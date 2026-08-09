@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <memory>
 #include <thread>
 #include <string>
 #include <chrono>
@@ -29,11 +30,13 @@
 #include "ProcessMonitor.h"
 #include "DifficultyManager.h"
 #include "treeminer/PhcAssembler.h"
+#include "journal/FindJournal.h"
+#include "submit/HttpTransport.h"
+#include "submit/SubmissionManager.h"
 #include "StatReporter.h"
 #include "LocalServer.h"
 #include "BlockSubmitter.h"
 #include "hashapi/HashApiCli.h"
-#include <regex>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -338,6 +341,41 @@ int main(int argc, const char *const *argv)
     }
     std::cout << "Machine ID: " << machineId << std::endl;
 
+    // --- TreeMiner journal-first pipeline (replaces the upstream in-RAM closure queue) ---
+    // Every find is durably journaled before any network attempt; the SubmissionManager
+    // drains the journal with outage-aware retry, parking, and /get_block confirmation.
+    std::unique_ptr<treeminer::FindJournal> findJournal;
+    std::unique_ptr<treeminer::HttpTransport> findTransport;
+    std::unique_ptr<treeminer::SubmissionManager> submissionManager;
+    try {
+        findJournal = std::make_unique<treeminer::FindJournal>("treeminer-journal.db");
+    } catch (const treeminer::JournalError& e) {
+        std::cerr << RED << "FATAL: cannot open find journal: " << e.what() << RESET << std::endl;
+        return -1;
+    }
+    {
+        auto rec = findJournal->recoverOnStartup();
+        std::cout << "Journal recovered: " << rec.pending << " pending, "
+                  << rec.accepted_unconfirmed << " awaiting confirmation, "
+                  << (rec.parked_difficulty + rec.parked_xuni) << " parked, "
+                  << rec.acked << " acked, " << rec.quarantined << " quarantined" << std::endl;
+    }
+    if (!isTestFixedDiff) {
+        findTransport = std::make_unique<treeminer::HttpTransport>(globalRpcLink, machineId);
+        submissionManager = std::make_unique<treeminer::SubmissionManager>(*findJournal, *findTransport);
+        submissionManager->setDifficultyHintCallback([](std::uint32_t d) {
+            std::lock_guard<std::mutex> lock(mtx);
+            if (globalDifficulty != static_cast<int>(d)) {
+                globalDifficulty = static_cast<int>(d);
+                std::cout << "Difficulty updated from server hint: " << d << std::endl;
+            }
+        });
+        globalDifficultyObserver = [&manager = *submissionManager](std::uint32_t d) {
+            manager.observeDifficulty(d);
+        };
+        submissionManager->start();
+    }
+
     if (!isTestFixedDiff) {
         globalDifficulty = 42069;
         updateDifficulty();
@@ -350,11 +388,8 @@ int main(int argc, const char *const *argv)
     std::thread uploadThread(uploadGpuInfos);
     uploadThread.detach();
 
-    std::thread submitThread(workerThread);
-    submitThread.detach();
-
     Logger logger("log", 1024 * 1024);
-    SubmitCallback submitCallback = [&logger](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
+    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
 
         // Immutable payload capture: the PHC string is assembled once from the parameters the
         // GPU batch actually used. Upstream re-hashed with globalDifficulty at submit time and
@@ -365,97 +400,51 @@ int main(int argc, const char *const *argv)
             globalPlatformManager->onBlockFound(hashed_data, key, "0x" + hexsalt, attempts, hashrate);
         }
 
-        std::function<void()> task = [&logger, hexsalt, key, hashed_pure, hashed_data, attempts, hashrate]() {
+        treeminer::FoundPayload payload;
+        payload.key = key;
+        payload.hash_to_verify = hashed_data;
+        payload.account = "0x" + hexsalt;
+        payload.kind = hashed_pure.find("XEN11") != std::string::npos ? treeminer::FindKind::XEN11
+                                                                     : treeminer::FindKind::XUNI;
+        payload.memory_cost = memory_cost;
+        payload.worker = machineId;
+        payload.attempts = attempts;
+        payload.hashes_per_second = hashrate;
+        payload.found_at_utc = treeminer::SubmissionManager::isoUtc(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
 
-            std::ostringstream hashrateStream;
-            hashrateStream << std::fixed << std::setprecision(2) << hashrate;
-            std::string address = "0x" + hexsalt;
-            nlohmann::json payload = {
-                {"hash_to_verify", hashed_data},
-                {"key", key},
-                {"account", address},
-                {"attempts", std::to_string(attempts)},
-                {"hashes_per_second", hashrateStream.str()},
-                {"worker", machineId}
-            };
-            std::cout << std::endl;
-            std::cout << "Payload: " << payload.dump(4) << std::endl;
-            logger.log(payload.dump(-1));
-
-            int retries = 0;
-            int retries_noResponse = 0;
-            std::regex pattern(R"(XUNI\d)");
-            while (true) {
-                if(retries_noResponse >= 10) {
-                    std::cout << RED << "No response from server after " << retries_noResponse << " retries" << RESET << std::endl;
-                    logger.log("No response from server: " + payload.dump(-1));
-                    return;
-                }
-                try {
-                    HttpClient httpClient;
-                    HttpResponse response = httpClient.HttpPost(globalRpcLink+"/verify", payload, 10000);
-                    if(response.GetBody() == "") {
-                        retries_noResponse++;
-                        continue;
-                    } else {
-                        bool errorButFound = false;
-                        if(response.GetBody().find("outside of time window") != std::string::npos){
-                            std::cout << "Server Response: " << response.GetBody() << std::endl;
-                            logger.log(key + " response: " + response.GetBody());
-                            return;
-                        }
-                        if(response.GetBody().find("already exists") != std::string::npos) {
-                            errorButFound = true;
-                        } else if(response.GetStatusCode() != 500) {
-                            std::cout << "Server Response: " << response.GetBody() << std::endl;
-                        }
-                        if (response.GetStatusCode() == 200 || errorButFound) {
-                            if(hashed_pure.find("XEN11") != std::string::npos){
-                                size_t capitalCount = std::count_if(hashed_pure.begin(), hashed_pure.end(), [](unsigned char c) { return std::isupper(c); });
-                                if (capitalCount >= 50) {
-                                    std::cout << GREEN << "Superblock found!" << RESET << std::endl;
-                                    globalSuperBlockCount++;
-                                } else {
-                                    std::cout << GREEN << "Normalblock found!" << RESET << std::endl;
-                                    globalNormalBlockCount++;
-                                }
-                                break;
-                            } else if (std::regex_search(hashed_pure, pattern)){
-                                std::cout << GREEN << "Xuni found!" << RESET << std::endl;
-                                globalXuniBlockCount++;
-                                break;
-                            }
-                        }
-
-                        if (response.GetStatusCode() != 500) {
-                            logger.log(key + " trying..." + std::to_string(retries + 1) + " response: " + response.GetBody());
-                        } else {
-                            logger.log(key + " response: status 500");
-                        }
-                    }
-
-                } catch (const std::exception& e) {
-                }
-                retries++;
-                std::this_thread::sleep_for(std::chrono::seconds(2));
-                if (retries >= MAX_SUBMIT_RETRIES) {
-                    if(hashed_pure.find("XEN11") != std::string::npos){
-                        globalFailedBlockCount++;
-                    }
-                    std::cout << RED << "Failed to submit block after " << retries << " retries" << RESET << std::endl;
-                    logger.log("Failed to submit block: " + payload.dump(-1));
-                    return;
-                }
-            }
-        };
-
-        if (!isTestFixedDiff) {
-            std::lock_guard<std::mutex> lock(mtx_submit);
-            taskQueue.push(std::move(task));
-        } else {
-            std::cout << "Block found (test mode, RPC skipped)." << std::endl;
+        // Journal-first: durable before any network attempt. A journal failure is the one
+        // event this miner must never be quiet about.
+        bool journaled = false;
+        try {
+            findJournal->append(payload);
+            journaled = true;
+        } catch (const treeminer::JournalError& e) {
+            std::cout << std::endl << RED << "JOURNAL WRITE FAILED - find at risk: " << e.what() << RESET << std::endl;
+            logger.log("JOURNAL WRITE FAILED key=" + key + " error=" + e.what());
         }
-        cv.notify_one();
+        logger.log("found key=" + key + " hash=" + hashed_data + (journaled ? " journaled" : " NOT-JOURNALED"));
+
+        std::cout << std::endl;
+        if (payload.kind == treeminer::FindKind::XEN11) {
+            size_t capitalCount = std::count_if(hashed_pure.begin(), hashed_pure.end(), [](unsigned char c) { return std::isupper(c); });
+            if (capitalCount >= 50) {
+                std::cout << GREEN << "Superblock found!" << RESET;
+                globalSuperBlockCount++;
+            } else {
+                std::cout << GREEN << "Normalblock found!" << RESET;
+                globalNormalBlockCount++;
+            }
+        } else {
+            std::cout << YELLOW << "Xuni found!" << RESET;
+            globalXuniBlockCount++;
+        }
+        std::cout << (journaled ? " Journaled (durable); submission queued." : " NOT journaled!") << std::endl;
+
+        if (submissionManager) {
+            submissionManager->notifyFindAppended();
+        }
     };
 
     StatCallback statCallback = [](const gpuInfo gpuinfo)

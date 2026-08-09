@@ -8,6 +8,8 @@
 #include "HttpClient.h"
 #include "MiningCommon.h"
 
+std::function<void(std::uint32_t)> globalDifficultyObserver;
+
 std::string getDifficulty()
 {
     HttpClient httpClient;
@@ -40,11 +42,17 @@ void updateDifficulty()
         std::string difficultyStr = getDifficulty();
         int newDifficulty = std::stoi(difficultyStr);
 
-        std::lock_guard<std::mutex> lock(mtx);
-        if (globalDifficulty != newDifficulty)
         {
-            globalDifficulty = newDifficulty;
-            std::cout << "Updated difficulty to " << globalDifficulty << std::endl;
+            std::lock_guard<std::mutex> lock(mtx);
+            if (globalDifficulty != newDifficulty)
+            {
+                globalDifficulty = newDifficulty;
+                std::cout << "Updated difficulty to " << globalDifficulty << std::endl;
+            }
+        }
+        if (globalDifficultyObserver)
+        {
+            globalDifficultyObserver(static_cast<std::uint32_t>(newDifficulty));
         }
     }
     catch (const std::exception &e)

@@ -54,6 +54,32 @@ public:
         return out;
     }
 
+    std::vector<FindRecord> fetchAwaitingConfirmation(const std::string& now_utc,
+                                                      std::size_t limit) override {
+        std::vector<FindRecord> out;
+        for (const auto& r : records_) {  // oldest-first
+            if (r.status != FindStatus::AcceptedUnconfirmed) {
+                continue;
+            }
+            if (r.next_attempt_at && *r.next_attempt_at > now_utc) {
+                continue;
+            }
+            out.push_back(r);
+            if (out.size() >= limit) {
+                break;
+            }
+        }
+        return out;
+    }
+
+    std::optional<FindRecord> getById(std::int64_t id) override {
+        FindRecord* r = find_(id);
+        if (!r) {
+            return std::nullopt;
+        }
+        return *r;
+    }
+
     void recordAttempt(std::int64_t id, const Classification& c,
                        std::optional<int> http_status, const std::string& response_body,
                        const std::optional<std::string>& next_attempt_at,
@@ -150,6 +176,8 @@ public:
                 case FindStatus::Quarantined: ++c.quarantined; break;
                 case FindStatus::Acked: ++c.acked_total; break;
                 case FindStatus::Dead: ++c.dead_total; break;
+                case FindStatus::AcceptedUnconfirmed: ++c.accepted_unconfirmed; break;
+                case FindStatus::PermanentlyInvalid: ++c.permanently_invalid; break;
                 default: break;
             }
         }

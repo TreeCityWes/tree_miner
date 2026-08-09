@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.18)
 
 option(XENBLOCKS_BUILD_MINER "Build the full CUDA miner" ON)
+option(TREEMINER_BUILD_TESTS "Build TreeMiner unit tests (journal + submit)" ON)
 option(XENBLOCKS_BUILD_HASHAPI_CLI "Build the standalone Hash API CLI" OFF)
 option(XENBLOCKS_HASHAPI_STUB_BACKEND "Build hashapi-cli with a deterministic stub backend for CLI smoke tests" OFF)
 option(XENBLOCKS_BUILD_HASH_DIAGNOSTICS "Build small hash diagnostic self-test tools" ON)
@@ -96,8 +97,21 @@ if(XENBLOCKS_BUILD_MINER)
     list(APPEND LINK_LIBRARIES CUDA::nvml unofficial::argon2::libargon2 cryptopp::cryptopp cpr::cpr nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto Boost::program_options unofficial::secp256k1 unofficial::secp256k1_precomputed Crow::Crow ${XENBLOCKS_PAHO_MQTT_CPP_TARGET})
 endif()
 
+# TreeMiner components: durable journal + submission stack (contract in src/treeminer/).
+if(XENBLOCKS_BUILD_MINER)
+    set(TREEMINER_SUBMIT_WITH_HTTP ON CACHE BOOL "" FORCE)
+    add_subdirectory(src/journal)
+    add_subdirectory(src/submit)
+endif()
+if(TREEMINER_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests/unit/journal)
+    add_subdirectory(tests/unit/submit)
+endif()
+
 set(SOURCE_FILES
     src/main.cpp
+    src/treeminer/Types.cpp
     src/ProcessMonitor.cpp
     src/DifficultyManager.cpp
     src/StatReporter.cpp
@@ -167,6 +181,7 @@ if(XENBLOCKS_BUILD_MINER)
     elseif(UNIX AND NOT APPLE)
         target_link_libraries(${PROJECT_NAME} PRIVATE ${LINK_LIBRARIES})
     endif()
+    target_link_libraries(${PROJECT_NAME} PRIVATE treeminer_journal treeminer_submit)
 
     target_compile_options(${PROJECT_NAME} PRIVATE
         $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets>

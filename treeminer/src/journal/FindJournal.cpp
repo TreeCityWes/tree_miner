@@ -10,33 +10,10 @@
 
 namespace treeminer {
 
-// ---------------------------------------------------------------------------------------
-// Shared enum <-> string mapping. The strings ARE the persisted DB values and must match
-// the Types.h enumerator names exactly.
-// ---------------------------------------------------------------------------------------
-
-const char* to_string(FindStatus s) {
-    switch (s) {
-        case FindStatus::Pending:             return "Pending";
-        case FindStatus::Submitting:          return "Submitting";
-        case FindStatus::AcceptedUnconfirmed: return "AcceptedUnconfirmed";
-        case FindStatus::Acked:               return "Acked";
-        case FindStatus::ParkedDifficulty:    return "ParkedDifficulty";
-        case FindStatus::ParkedXuniWindow:    return "ParkedXuniWindow";
-        case FindStatus::Quarantined:         return "Quarantined";
-        case FindStatus::Dead:                return "Dead";
-        case FindStatus::PermanentlyInvalid:  return "PermanentlyInvalid";
-    }
-    return "Unknown";  // unreachable for valid enum values
-}
-
-const char* to_string(FindKind k) {
-    switch (k) {
-        case FindKind::XEN11: return "XEN11";
-        case FindKind::XUNI:  return "XUNI";
-    }
-    return "Unknown";  // unreachable for valid enum values
-}
+// NOTE: to_string(FindStatus)/to_string(FindKind) are defined ONLY in
+// src/treeminer/Types.cpp (integration-lead-owned, contract v1.1); this component links
+// against that TU and must not define them. The returned strings ARE the persisted DB
+// values and match the Types.h enumerator names exactly.
 
 namespace {
 
@@ -396,14 +373,15 @@ std::int64_t FindJournal::append(const FoundPayload& payload) {
     return id;
 }
 
-std::vector<FindRecord> FindJournal::fetchEligible(const std::string& now_utc,
-                                                   std::size_t limit) {
-    std::lock_guard<std::mutex> lock(mutex_);
+std::vector<FindRecord> FindJournal::fetchByStatusLocked(const char* statusLiteral,
+                                                         const std::string& now_utc,
+                                                         std::size_t limit) {
     std::string sql = "SELECT ";
     sql += kRecordColumns;
     sql += " FROM finds"
-           " WHERE status = 'Pending'"
-           "   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)"
+           " WHERE status = '";
+    sql += statusLiteral;  // trusted compile-time literal, see header
+    sql += "'   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)"
            " ORDER BY id ASC LIMIT ?2;";
     Statement select(db_, sql.c_str());
     select.bindText(1, now_utc);
@@ -414,6 +392,31 @@ std::vector<FindRecord> FindJournal::fetchEligible(const std::string& now_utc,
         records.push_back(rowToRecord(select));
     }
     return records;
+}
+
+std::vector<FindRecord> FindJournal::fetchEligible(const std::string& now_utc,
+                                                   std::size_t limit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fetchByStatusLocked("Pending", now_utc, limit);
+}
+
+std::vector<FindRecord> FindJournal::fetchAwaitingConfirmation(const std::string& now_utc,
+                                                               std::size_t limit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return fetchByStatusLocked("AcceptedUnconfirmed", now_utc, limit);
+}
+
+std::optional<FindRecord> FindJournal::getById(std::int64_t id) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string sql = "SELECT ";
+    sql += kRecordColumns;
+    sql += " FROM finds WHERE id = ?1;";
+    Statement select(db_, sql.c_str());
+    select.bindInt64(1, id);
+    if (!select.step()) {
+        return std::nullopt;
+    }
+    return rowToRecord(select);
 }
 
 void FindJournal::recordAttempt(std::int64_t id, const Classification& c,
@@ -549,13 +552,15 @@ IFindJournal::Counts FindJournal::counts() {
     while (select.step()) {
         const auto count = static_cast<std::size_t>(select.columnInt64(1));
         switch (statusFromString(select.columnText(0))) {
-            case FindStatus::Pending:          result.pending += count; break;
+            case FindStatus::Pending:             result.pending += count; break;
             case FindStatus::ParkedDifficulty:
-            case FindStatus::ParkedXuniWindow: result.parked += count; break;
-            case FindStatus::Quarantined:      result.quarantined += count; break;
-            case FindStatus::Acked:            result.acked_total += count; break;
-            case FindStatus::Dead:             result.dead_total += count; break;
-            default: break;  // AcceptedUnconfirmed / PermanentlyInvalid: no Counts slot
+            case FindStatus::ParkedXuniWindow:    result.parked += count; break;
+            case FindStatus::Quarantined:         result.quarantined += count; break;
+            case FindStatus::Acked:               result.acked_total += count; break;
+            case FindStatus::Dead:                result.dead_total += count; break;
+            case FindStatus::AcceptedUnconfirmed: result.accepted_unconfirmed += count; break;
+            case FindStatus::PermanentlyInvalid:  result.permanently_invalid += count; break;
+            case FindStatus::Submitting:          break;  // never persisted
         }
     }
     return result;

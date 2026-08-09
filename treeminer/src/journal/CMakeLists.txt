@@ -11,6 +11,11 @@
 #   target_link_libraries(<consumer> PRIVATE treeminer_journal)
 # and include headers as "journal/FindJournal.h" / "treeminer/IFindJournal.h".
 #
+# NOTE (contract v1.1): this library REFERENCES treeminer::to_string(FindStatus/FindKind)
+# but deliberately does not define them — src/treeminer/Types.cpp is the single defining
+# TU (integration-lead-owned) and must be compiled into each final binary that links
+# treeminer_journal (the miner links it once; test binaries add it to their sources).
+#
 # Dependency: vcpkg port `sqlite3` (already listed in vcpkg.json).
 # ---------------------------------------------------------------------------------------
 

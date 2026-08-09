@@ -121,10 +121,8 @@ void MineUnit::submitMatches(const std::string& salt, const hashapi::HashApiResu
 			nextAttemptIndex = match.attempt_index + 1;
 		}
 
-		if (match.matched_pattern == "XUNI" && !is_within_five_minutes_of_hour()) {
-			continue;
-		}
-
+		// Journal-first: a XUNI found as the window closes mid-batch is still captured;
+		// the submission layer parks it (ParkedXuniWindow) instead of dropping it here.
 		submitCallback(salt, match.key, match.hash, static_cast<std::uint32_t>(difficulty), attempts, hashrate);
 		attempts = 0;
 	}

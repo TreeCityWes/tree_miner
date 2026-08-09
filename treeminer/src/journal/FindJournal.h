@@ -57,6 +57,15 @@ public:
     std::vector<FindRecord> fetchEligible(const std::string& now_utc,
                                           std::size_t limit) override;
 
+    // Contract v1.1: oldest-first AcceptedUnconfirmed rows whose next_attempt_at is NULL
+    // or <= now_utc, so /get_block confirmation can be re-driven after a transient lookup
+    // failure. Same eligibility/backoff semantics and row hydration as fetchEligible.
+    std::vector<FindRecord> fetchAwaitingConfirmation(const std::string& now_utc,
+                                                      std::size_t limit) override;
+
+    // Contract v1.1: single-record lookup; std::nullopt when no such id.
+    std::optional<FindRecord> getById(std::int64_t id) override;
+
     // Persists one attempt outcome. attempt_count is incremented, last_attempt_at is set
     // to now_utc, and when the new status is Acked, confirmed_at is set to now_utc (first
     // confirmation wins; a repeated Ack does not move it). Classification.next_status must
@@ -86,16 +95,20 @@ public:
     void recordDifficulty(std::uint32_t difficulty, const std::string& at_utc) override;
     std::optional<std::uint32_t> lastKnownDifficulty() override;
 
-    // Strict mapping: pending=Pending, parked=ParkedDifficulty+ParkedXuniWindow,
-    // quarantined=Quarantined, acked_total=Acked, dead_total=Dead. Note that the Counts
-    // contract has no slot for AcceptedUnconfirmed or PermanentlyInvalid; those states
-    // are visible via recoverOnStartup() only (flagged to the integration lead).
+    // Strict per-state mapping: pending=Pending, parked=ParkedDifficulty+ParkedXuniWindow,
+    // quarantined=Quarantined, acked_total=Acked, dead_total=Dead, plus the v1.1 slots
+    // accepted_unconfirmed=AcceptedUnconfirmed and permanently_invalid=PermanentlyInvalid.
     Counts counts() override;
 
 private:
     void applyPragmas();
     void ensureSchema();
     void execOrThrow(const char* sql, const char* context);
+    // Shared query body for fetchEligible / fetchAwaitingConfirmation. Caller holds mutex_;
+    // statusLiteral must be a trusted compile-time status string, never user input.
+    std::vector<FindRecord> fetchByStatusLocked(const char* statusLiteral,
+                                                const std::string& now_utc,
+                                                std::size_t limit);
 
     sqlite3* db_ = nullptr;
     std::mutex mutex_;  // guards db_ across all public methods

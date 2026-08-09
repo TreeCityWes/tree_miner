@@ -14,7 +14,10 @@
 // GET /get_block?key= finds the row (-> Acked). A 404 on lookup after a 200 is the
 // server's lying-200 (insert retries exhausted, gpage.py:492-494,515): the record goes
 // back to Pending and is resubmitted. If the lookup itself is unavailable, the record
-// stays AcceptedUnconfirmed with metrics — never silently presented as confirmed.
+// stays AcceptedUnconfirmed with a backed-off next_attempt_at and is re-driven later via
+// fetchAwaitingConfirmation (contract v1.1) — never silently presented as confirmed.
+// Confirmation retries run after the normal drain step, outside the drain-rate budget,
+// and are skipped entirely while the breaker is OPEN.
 //
 // All time is injectable: a monotonic ms clock for pacing/breaker and a wall epoch-ms
 // clock for journal timestamps and the XUNI window estimate.
@@ -41,6 +44,7 @@ class SubmissionManager {
 public:
     struct Config {
         std::size_t fetch_limit = 16;
+        std::size_t confirm_fetch_limit = 4;    // AcceptedUnconfirmed retry batch per step
         std::int64_t backoff_base_ms = 2000;    // per-record: base * 2^attempts, capped
         std::int64_t backoff_cap_ms = 300000;
         std::int32_t xuni_max_windows = 3;      // window budget before Dead (PLAN §10.5)
@@ -54,6 +58,7 @@ public:
         Probed,          // OPEN: issued a /difficulty probe
         Submitted,       // issued a /verify attempt (result recorded in the journal)
         BreakerBlocked,  // eligible work exists but the breaker refused admission
+        ConfirmRetried,  // no submission was due, but confirmation retries were driven
     };
 
     using MonotonicClock = std::function<std::int64_t()>;  // ms
@@ -94,6 +99,7 @@ public:
         std::uint64_t acked = 0;
         std::uint64_t accepted_unconfirmed = 0;
         std::uint64_t reconciled_via_get_block = 0;
+        std::uint64_t confirmation_retries = 0;
         std::uint64_t lying_200_detected = 0;
         std::uint64_t parked_difficulty = 0;
         std::uint64_t parked_xuni = 0;
@@ -120,6 +126,7 @@ private:
                                 std::optional<long> retry_after_s) const;
     StepResult probeStep_();
     StepResult submitStep_();
+    StepResult confirmStep_();
 
     IFindJournal& journal_;
     ITransport& transport_;

@@ -10,9 +10,19 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
 
 - Added `sqlite3` to vcpkg.json (journal dependency).
 - Added `src/treeminer/Types.h` — shared journal/submitter contract types.
-- (in progress) `src/journal/` — durable WAL-mode SQLite FindJournal (journal-first invariant).
-- (in progress) `src/submit/` — ResponseClassifier, CircuitBreaker, SubmissionManager replacing
-  the upstream in-RAM closure queue (`BlockSubmitter`).
+- `src/journal/` — durable WAL-mode SQLite FindJournal (journal-first invariant); 11-test
+  unit suite.
+- `src/submit/` — ResponseClassifier, CircuitBreaker, DrainScheduler, SubmissionManager,
+  HttpTransport replacing the upstream in-RAM closure queue; 4 unit suites (200+ checks)
+  plus a gpage.py-faithful mock server with fault injection (`tests/mockserver/`).
+- **Journal-first integration** (`main.cpp`, `DifficultyManager.*`, `MineUnit.cpp`,
+  root `CMakeLists.txt`): submit callback now journals the find durably and wakes the
+  SubmissionManager; the upstream `BlockSubmitter` worker thread is no longer started
+  (its retry loop dropped finds after 5 tries / 10 no-responses). Block counters count
+  journaled finds. Difficulty poller feeds `SubmissionManager::observeDifficulty` via
+  `globalDifficultyObserver`. `MineUnit` no longer drops XUNI matches when the local
+  clock says the window closed mid-batch — the journal parks them instead. Journal db:
+  `treeminer-journal.db` in the working directory.
 - **Immutable payload capture** (`src/treeminer/PhcAssembler.h`, `MiningCommon.h`,
   `MineUnit.cpp`, `main.cpp`): the PHC string is assembled once at discovery from the batch's
   actual `memory_cost` (now passed through `SubmitCallback`); both CPU Argon2 re-hashes are

@@ -295,9 +295,18 @@ std::string SubmissionManager::backoffTimeIso_(std::int32_t attempt_count,
 
 SubmissionManager::StepResult SubmissionManager::runOnce() {
     if (breaker_.state() == CircuitBreaker::State::Open) {
+        // OPEN: probes only — no /verify traffic and no confirmation lookups either
+        // (they target the same host; hammering /get_block during an outage helps nobody).
         return probeStep_();
     }
-    return submitStep_();
+    const StepResult submit_result = submitStep_();
+    // Confirmation retries run after the normal drain step and outside the drain-rate
+    // budget, so a backlog of unconfirmed acks can never starve fresh submissions.
+    const StepResult confirm_result = confirmStep_();
+    if (submit_result == StepResult::Idle && confirm_result != StepResult::Idle) {
+        return confirm_result;
+    }
+    return submit_result;
 }
 
 SubmissionManager::StepResult SubmissionManager::probeStep_() {
@@ -401,9 +410,11 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
             std::lock_guard<std::mutex> lk(state_mutex_);
             ++metrics_.lying_200_detected;
         } else {
-            // Lookup unavailable: remain AcceptedUnconfirmed, with metrics — never
-            // presented as confirmed (PLAN §10.2).
+            // Lookup unavailable: remain AcceptedUnconfirmed with a backed-off
+            // next_attempt_at so fetchAwaitingConfirmation re-drives it later
+            // (contract v1.1) — never presented as confirmed (PLAN §10.2).
             c.reason += "; /get_block unavailable, remaining unconfirmed";
+            next_attempt = backoffTimeIso_(rec->attempt_count, std::nullopt);
         }
     }
 
@@ -464,6 +475,61 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         }
     }
     return StepResult::Submitted;
+}
+
+SubmissionManager::StepResult SubmissionManager::confirmStep_() {
+    // Re-drive AcceptedUnconfirmed rows whose confirmation lookup previously failed
+    // (contract v1.1: fetchAwaitingConfirmation honors the persisted next_attempt_at).
+    // Skipped while the breaker is OPEN — including when this very step opened it.
+    if (breaker_.state() == CircuitBreaker::State::Open) {
+        return StepResult::Idle;
+    }
+    std::vector<FindRecord> batch =
+        journal_.fetchAwaitingConfirmation(isoUtc(wall_()), cfg_.confirm_fetch_limit);
+    if (batch.empty()) {
+        return StepResult::Idle;
+    }
+    bool any = false;
+    for (const FindRecord& rec : batch) {
+        TransportResult conf = transport_.confirm(rec.payload.key);
+        trackServerDate_(conf);
+
+        Classification c;
+        std::optional<std::string> next_attempt;
+        if (conf.transport_ok && conf.http_status == 200) {
+            c.next_status = FindStatus::Acked;
+            c.reason = "confirmed via /get_block (retry)";
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.reconciled_via_get_block;
+        } else if (conf.transport_ok && conf.http_status == 404) {
+            // The lying-200, caught on retry: the row never became durable server-side.
+            c.next_status = FindStatus::Pending;
+            c.reason = "/get_block says ABSENT — server 200 was not durable, resubmitting";
+            next_attempt = backoffTimeIso_(rec.attempt_count, std::nullopt);
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.lying_200_detected;
+        } else {
+            // Still unavailable (transport failure, 5xx, unexpected schema): stay
+            // AcceptedUnconfirmed and push the retry out with per-record backoff.
+            c.next_status = FindStatus::AcceptedUnconfirmed;
+            c.reason = "/get_block unavailable, remaining unconfirmed (retry backoff)";
+            next_attempt = backoffTimeIso_(rec.attempt_count, std::nullopt);
+        }
+
+        journal_.recordAttempt(rec.id, c,
+                               conf.transport_ok ? std::optional<int>(conf.http_status)
+                                                 : std::nullopt,
+                               conf.body, next_attempt, isoUtc(wall_()));
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.confirmation_retries;
+        }
+        any = true;
+        if (!conf.transport_ok) {
+            break;  // the host looks down — don't hammer it with the rest of the batch
+        }
+    }
+    return any ? StepResult::ConfirmRetried : StepResult::Idle;
 }
 
 }  // namespace treeminer

@@ -468,13 +468,96 @@ TEST_CASE(recover_on_startup_counts) {
     CHECK_EQ(raw.scalarText("SELECT next_attempt_at FROM finds WHERE id=1;").value(),
              "2026-08-09T11:00:00Z");
 
-    // counts() mapping: parked aggregates both parked states; strict elsewhere.
+    // counts() mapping: parked aggregates both parked states; strict per-state
+    // elsewhere, including the v1.1 slots.
     const IFindJournal::Counts counts = journal.counts();
     CHECK_EQ(counts.pending, 2u);
     CHECK_EQ(counts.parked, 2u);
     CHECK_EQ(counts.quarantined, 1u);
     CHECK_EQ(counts.acked_total, 1u);
     CHECK_EQ(counts.dead_total, 1u);
+    CHECK_EQ(counts.accepted_unconfirmed, 1u);
+    CHECK_EQ(counts.permanently_invalid, 1u);
+}
+
+TEST_CASE(fetch_awaiting_confirmation) {
+    TempDb tmp("fetch_awaiting_confirmation");
+    FindJournal journal(tmp.path);
+
+    const std::int64_t idPending = journal.append(makePayload("71"));
+    const std::int64_t idNoBackoff = journal.append(makePayload("72"));
+    const std::int64_t idPastBackoff = journal.append(makePayload("73"));
+    const std::int64_t idFutureBackoff = journal.append(makePayload("74"));
+
+    // Three AcceptedUnconfirmed rows: NULL, past, and future next_attempt_at.
+    journal.recordAttempt(idNoBackoff,
+                          classify(FindStatus::AcceptedUnconfirmed, "lookup down"), 200,
+                          "OK", std::nullopt, kNow);
+    journal.recordAttempt(idPastBackoff,
+                          classify(FindStatus::AcceptedUnconfirmed, "lookup down"), 200,
+                          "OK", std::string("2026-08-09T12:00:00Z"), kNow);
+    journal.recordAttempt(idFutureBackoff,
+                          classify(FindStatus::AcceptedUnconfirmed, "lookup down"), 200,
+                          "OK", std::string("2026-08-09T13:00:00Z"), kNow);
+
+    // NULL and past backoffs are fetched oldest-first; the future one is not; Pending
+    // rows never leak into the confirmation queue.
+    auto awaiting = journal.fetchAwaitingConfirmation(kNow, 10);
+    CHECK_EQ(awaiting.size(), 2u);
+    CHECK_EQ(awaiting[0].id, idNoBackoff);
+    CHECK_EQ(awaiting[1].id, idPastBackoff);
+    CHECK(awaiting[0].status == FindStatus::AcceptedUnconfirmed);
+    CHECK_EQ(awaiting[0].status_reason, "lookup down");
+    CHECK_EQ(awaiting[0].attempt_count, 1);
+    CHECK(awaiting[0].last_http_status.has_value());
+    CHECK_EQ(awaiting[0].last_http_status.value(), 200);
+    CHECK_EQ(awaiting[0].payload.key, makePayload("72").key);  // full hydration
+
+    // Backoff boundary is inclusive, and LIMIT applies.
+    awaiting = journal.fetchAwaitingConfirmation("2026-08-09T13:00:00Z", 10);
+    CHECK_EQ(awaiting.size(), 3u);
+    CHECK_EQ(awaiting[2].id, idFutureBackoff);
+    awaiting = journal.fetchAwaitingConfirmation("2026-08-09T13:00:00Z", 1);
+    CHECK_EQ(awaiting.size(), 1u);
+    CHECK_EQ(awaiting[0].id, idNoBackoff);
+
+    // Conversely fetchEligible sees only the Pending row.
+    auto eligible = journal.fetchEligible(kNow, 10);
+    CHECK_EQ(eligible.size(), 1u);
+    CHECK_EQ(eligible[0].id, idPending);
+}
+
+TEST_CASE(get_by_id_hit_and_miss) {
+    TempDb tmp("get_by_id_hit_and_miss");
+    FindJournal journal(tmp.path);
+
+    const FoundPayload payload = makePayload("81", FindKind::XUNI, 1600);
+    const std::int64_t id = journal.append(payload);
+    const std::string ackTime = "2026-08-09T12:45:00Z";
+    journal.recordAttempt(id, classify(FindStatus::Acked, "confirmed"), 200, "OK",
+                          std::nullopt, ackTime);
+
+    // Hit: full hydration, including a terminal state fetchEligible would never expose.
+    const auto found = journal.getById(id);
+    CHECK(found.has_value());
+    CHECK_EQ(found->id, id);
+    CHECK(found->status == FindStatus::Acked);
+    CHECK_EQ(found->status_reason, "confirmed");
+    CHECK_EQ(found->attempt_count, 1);
+    CHECK(found->confirmed_at.has_value());
+    CHECK_EQ(found->confirmed_at.value(), ackTime);
+    CHECK(found->last_attempt_at.has_value());
+    CHECK_EQ(found->last_attempt_at.value(), ackTime);
+    CHECK_EQ(found->last_response, "OK");
+    CHECK_EQ(found->payload.key, payload.key);
+    CHECK_EQ(found->payload.hash_to_verify, payload.hash_to_verify);
+    CHECK_EQ(found->payload.account, payload.account);
+    CHECK(found->payload.kind == FindKind::XUNI);
+    CHECK_EQ(found->payload.memory_cost, 1600u);
+    CHECK_EQ(found->payload.found_at_utc, payload.found_at_utc);
+
+    // Miss: nullopt, no throw.
+    CHECK(!journal.getById(9999).has_value());
 }
 
 TEST_CASE(difficulty_seen_round_trip) {

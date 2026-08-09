@@ -211,6 +211,11 @@ int main() {
         CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
         CHECK_EQ(m.metrics().accepted_unconfirmed, 1u);
         CHECK(j.record(id).status_reason.find("unavailable") != std::string::npos);
+        // v1.1: a backed-off next_attempt_at is persisted so fetchAwaitingConfirmation
+        // re-drives this record later (and does not hot-loop it right now).
+        CHECK_STREQ(j.record(id).next_attempt_at.value_or(""),
+                    SubmissionManager::isoUtc(clk.wall + 2000));
+        CHECK_EQ(t.confirmed_keys.size(), static_cast<std::size_t>(1));
     }
 
     // --- difficulty hint propagation from a 401 body ---
@@ -379,6 +384,110 @@ int main() {
         CHECK(m.difficultyTrend() == treeminer::DifficultyTrend::Falling);
         CHECK_EQ(j.unpark_difficulty_calls.size(), static_cast<std::size_t>(1));
         CHECK_EQ(j.unpark_difficulty_calls.empty() ? 0 : j.unpark_difficulty_calls[0], 100000u);
+    }
+
+    // --- confirmation-retry drain (contract v1.1: fetchAwaitingConfirmation) ---
+    TEST_CASE("confirmation retry succeeds -> Acked");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;  // 00:30 — XUNI window closed
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        auto id = j.append(payload("dd11", FindKind::XEN11, 100000));
+        j.find_(id)->status = FindStatus::AcceptedUnconfirmed;  // earlier 200, lookup failed
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);  // no Pending work: retry only
+        CHECK(j.record(id).status == FindStatus::Acked);
+        CHECK(j.record(id).confirmed_at.has_value());
+        CHECK(t.submitted_keys.empty());  // never re-POSTs an unconfirmed record
+        CHECK_EQ(m.metrics().confirmation_retries, 1u);
+        CHECK_EQ(m.metrics().reconciled_via_get_block, 1u);
+    }
+
+    TEST_CASE("confirmation retry finds 404 -> Pending (lying-200 caught late)");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        auto id = j.append(payload("dd22", FindKind::XEN11, 100000));
+        j.find_(id)->status = FindStatus::AcceptedUnconfirmed;
+        t.confirm_queue.push_back(ok(404, R"({"error": "Data not found for provided key"})"));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::Pending);
+        CHECK(j.record(id).next_attempt_at.has_value());
+        CHECK_EQ(m.metrics().lying_200_detected, 1u);
+        // After the backoff it re-enters the normal submission drain.
+        clk.advance(10000);
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK(j.record(id).status == FindStatus::Acked);
+    }
+
+    TEST_CASE("confirmation retry transport-down stays unconfirmed with future backoff");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        auto id = j.append(payload("dd33", FindKind::XEN11, 100000));
+        j.find_(id)->status = FindStatus::AcceptedUnconfirmed;
+        t.confirm_queue.push_back(down());
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK_STREQ(j.record(id).next_attempt_at.value_or(""),
+                    SubmissionManager::isoUtc(clk.wall + 2000));
+        CHECK_EQ(t.confirmed_keys.size(), static_cast<std::size_t>(1));
+        // Backoff holds: an immediate second step issues no further lookups.
+        CHECK(m.runOnce() == StepResult::Idle);
+        CHECK_EQ(t.confirmed_keys.size(), static_cast<std::size_t>(1));
+        // Past the backoff the retry lands and the record confirms.
+        clk.advance(3000);
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::Acked);
+    }
+
+    TEST_CASE("breaker OPEN suppresses confirmation retries");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        j.append(payload("ee11", FindKind::XEN11, 100000));
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0) {
+                clk.advance(60000);
+            }
+            t.submit_queue.push_back(down());
+            CHECK(m.runOnce() == StepResult::Submitted);
+        }
+        CHECK(m.breakerState() == CircuitBreaker::State::Open);
+        // An unconfirmed record eligible right now...
+        auto u = j.append(payload("ee22", FindKind::XEN11, 100000));
+        j.find_(u)->status = FindStatus::AcceptedUnconfirmed;
+        // ...is NOT probed while the breaker is OPEN (probe isn't due yet either).
+        CHECK(m.runOnce() == StepResult::Idle);
+        CHECK(t.confirmed_keys.empty());
+        // Once the breaker recovers, the confirmation retry drains again.
+        clk.advance(6000);
+        t.difficulty_queue.push_back(ok(200, R"({"difficulty": "100000"})"));
+        CHECK(m.runOnce() == StepResult::Probed);  // HALF_OPEN now
+        clk.advance(60000);
+        t.submit_queue.push_back(ok(200, kOk200));   // half-open probe: the Pending record
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, kBlockRow));  // then the retry for ee22
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK(j.record(u).status == FindStatus::Acked);
     }
 
     return testfw::summary("submission_manager");
