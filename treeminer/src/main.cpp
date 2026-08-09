@@ -28,6 +28,7 @@
 #include "PlatformManager.h"
 #include "ProcessMonitor.h"
 #include "DifficultyManager.h"
+#include "treeminer/PhcAssembler.h"
 #include "StatReporter.h"
 #include "LocalServer.h"
 #include "BlockSubmitter.h"
@@ -353,32 +354,18 @@ int main(int argc, const char *const *argv)
     submitThread.detach();
 
     Logger logger("log", 1024 * 1024);
-    SubmitCallback submitCallback = [&logger](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const size_t attempts, const float hashrate) {
+    SubmitCallback submitCallback = [&logger](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
+
+        // Immutable payload capture: the PHC string is assembled once from the parameters the
+        // GPU batch actually used. Upstream re-hashed with globalDifficulty at submit time and
+        // silently dropped the find if difficulty had ticked in between.
+        const std::string hashed_data = treeminer::assemblePhc(memory_cost, hexsalt, hashed_pure);
 
         if (globalPlatformManager && globalPlatformManager->isRunning()) {
-            int diff_for_verify = 40404;
-            {
-                std::lock_guard<std::mutex> lock(mtx);
-                diff_for_verify = globalDifficulty;
-            }
-            Argon2idHasher verifyHasher(1, diff_for_verify, 1, hexsalt, HASH_LENGTH);
-            std::string verified_hash = verifyHasher.generateHash(key);
-            if (verified_hash.find(hashed_pure) != std::string::npos) {
-                globalPlatformManager->onBlockFound(verified_hash, key, "0x" + hexsalt, attempts, hashrate);
-            }
+            globalPlatformManager->onBlockFound(hashed_data, key, "0x" + hexsalt, attempts, hashrate);
         }
 
-        std::function<void()> task = [&logger, hexsalt, key, hashed_pure, attempts, hashrate]() {
-            int difficulty = 40404;
-            {
-                std::lock_guard<std::mutex> lock(mtx);
-                difficulty = globalDifficulty;
-            }
-            Argon2idHasher hasher(1, difficulty, 1, hexsalt, HASH_LENGTH);
-            std::string hashed_data = hasher.generateHash(key);
-            if(hashed_data.find(hashed_pure) == std::string::npos) {
-                return;
-            }
+        std::function<void()> task = [&logger, hexsalt, key, hashed_pure, hashed_data, attempts, hashrate]() {
 
             std::ostringstream hashrateStream;
             hashrateStream << std::fixed << std::setprecision(2) << hashrate;

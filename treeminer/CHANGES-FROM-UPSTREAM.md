@@ -13,8 +13,12 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
 - (in progress) `src/journal/` — durable WAL-mode SQLite FindJournal (journal-first invariant).
 - (in progress) `src/submit/` — ResponseClassifier, CircuitBreaker, SubmissionManager replacing
   the upstream in-RAM closure queue (`BlockSubmitter`).
-- (planned) Immutable `FoundPayload` capture at discovery — fixes upstream stale-difficulty
-  silent drop (`main.cpp:371-381`) and removes the double CPU re-verify (`main.cpp:364-378`).
-- (planned) Persistent collision-safe key generation — replaces 32-bit-seeded `mt19937`
-  (`RandomHexKeyGenerator.h:15-17`).
+- **Immutable payload capture** (`src/treeminer/PhcAssembler.h`, `MiningCommon.h`,
+  `MineUnit.cpp`, `main.cpp`): the PHC string is assembled once at discovery from the batch's
+  actual `memory_cost` (now passed through `SubmitCallback`); both CPU Argon2 re-hashes are
+  deleted. Fixes upstream's stale-difficulty silent drop (`main.cpp:371-381`) and removes
+  ~2 wasted CPU Argon2id runs per find. Salt encoding rule validated against the documented
+  legacy salt value.
+- **Collision-safe keygen** (`RandomHexKeyGenerator.h`): `mt19937_64` seeded from 256 bits of
+  OS entropy + clock + per-instance counter, replacing the single-32-bit-seed `mt19937`.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

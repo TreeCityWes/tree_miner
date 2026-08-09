@@ -125,7 +125,7 @@ void MineUnit::submitMatches(const std::string& salt, const hashapi::HashApiResu
 			continue;
 		}
 
-		submitCallback(salt, match.key, match.hash, attempts, hashrate);
+		submitCallback(salt, match.key, match.hash, static_cast<std::uint32_t>(difficulty), attempts, hashrate);
 		attempts = 0;
 	}
 
