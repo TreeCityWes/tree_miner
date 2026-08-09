@@ -1,0 +1,148 @@
+#pragma once
+// SubmissionManager — the single thread that drains the durable journal to the server
+// (PLAN.md §3.2 and §10 amendments 2, 4, 5, 6). Replaces upstream BlockSubmitter.
+//
+// One scheduling step (runOnce, also driven directly by unit tests):
+//   breaker OPEN   -> GET /difficulty probe when due (records difficulty, tracks server
+//                     clock offset from the HTTP Date header); success arms HALF_OPEN.
+//   otherwise      -> fetchEligible -> DrainScheduler picks a record (XUNI window +
+//                     difficulty trend aware) -> breaker admission -> transport.submit ->
+//                     classify -> optional /get_block confirmation -> journal.recordAttempt
+//                     -> breaker/pacing updates -> difficulty hints propagated.
+//
+// Confirmation-aware acks (PLAN §10.2): a 200 or duplicate is AcceptedUnconfirmed until
+// GET /get_block?key= finds the row (-> Acked). A 404 on lookup after a 200 is the
+// server's lying-200 (insert retries exhausted, gpage.py:492-494,515): the record goes
+// back to Pending and is resubmitted. If the lookup itself is unavailable, the record
+// stays AcceptedUnconfirmed with metrics — never silently presented as confirmed.
+//
+// All time is injectable: a monotonic ms clock for pacing/breaker and a wall epoch-ms
+// clock for journal timestamps and the XUNI window estimate.
+
+#include <atomic>
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+
+#include "../treeminer/IFindJournal.h"
+#include "../treeminer/Types.h"
+#include "CircuitBreaker.h"
+#include "DrainScheduler.h"
+#include "ITransport.h"
+#include "ResponseClassifier.h"
+
+namespace treeminer {
+
+class SubmissionManager {
+public:
+    struct Config {
+        std::size_t fetch_limit = 16;
+        std::int64_t backoff_base_ms = 2000;    // per-record: base * 2^attempts, capped
+        std::int64_t backoff_cap_ms = 300000;
+        std::int32_t xuni_max_windows = 3;      // window budget before Dead (PLAN §10.5)
+        std::int64_t idle_poll_ms = 250;        // thread wakeup granularity
+        CircuitBreaker::Config breaker;
+        DrainScheduler::Config drain;
+    };
+
+    enum class StepResult {
+        Idle,            // nothing due (no eligible work / pacing gate / probe not due)
+        Probed,          // OPEN: issued a /difficulty probe
+        Submitted,       // issued a /verify attempt (result recorded in the journal)
+        BreakerBlocked,  // eligible work exists but the breaker refused admission
+    };
+
+    using MonotonicClock = std::function<std::int64_t()>;  // ms
+    using WallClock = std::function<std::int64_t()>;       // epoch ms, UTC
+
+    // Default clocks (std::chrono) are used when null.
+    SubmissionManager(IFindJournal& journal, ITransport& transport, Config cfg = Config{},
+                      MonotonicClock monotonic = nullptr, WallClock wall = nullptr);
+    ~SubmissionManager();
+
+    SubmissionManager(const SubmissionManager&) = delete;
+    SubmissionManager& operator=(const SubmissionManager&) = delete;
+
+    // --- threading ---
+    void start();
+    void stop();
+    void notifyFindAppended();  // wake the drain thread after journal.append
+
+    // One scheduling step; the thread loop calls this, and tests drive it directly.
+    StepResult runOnce();
+
+    // --- difficulty integration (PLAN §3.3, §10.4) ---
+    // Fired for every fresh difficulty observation (poller-independent hints from 401
+    // bodies and OPEN-state probes) so the engine's cache updates immediately.
+    void setDifficultyHintCallback(std::function<void(std::uint32_t)> cb);
+    // Called by the DifficultyService poller too, so trend tracking sees every sample.
+    void observeDifficulty(std::uint32_t difficulty);
+    DifficultyTrend difficultyTrend() const { return trend_; }
+    std::optional<std::uint32_t> lastObservedDifficulty() const;
+
+    // --- server clock (PLAN §10.5; SOL §7) ---
+    // Offset = server wall clock - local wall clock, from HTTP Date headers. Unknown
+    // until the first dated response.
+    std::optional<std::int64_t> serverClockOffsetMs() const;
+
+    struct Metrics {
+        std::uint64_t submitted = 0;
+        std::uint64_t acked = 0;
+        std::uint64_t accepted_unconfirmed = 0;
+        std::uint64_t reconciled_via_get_block = 0;
+        std::uint64_t lying_200_detected = 0;
+        std::uint64_t parked_difficulty = 0;
+        std::uint64_t parked_xuni = 0;
+        std::uint64_t quarantined = 0;
+        std::uint64_t permanently_invalid = 0;
+        std::uint64_t transport_failures = 0;
+        std::uint64_t probes = 0;
+    };
+    Metrics metrics() const;
+    CircuitBreaker::State breakerState() const { return breaker_.state(); }
+    double drainRatePerSecond() const { return scheduler_.ratePerSecond(); }
+
+    // --- pure time helpers, exposed for unit tests ---
+    static std::string isoUtc(std::int64_t epoch_ms);
+    static std::optional<std::int64_t> parseHttpDateMs(const std::string& date_header);
+    // XUNI :55-:05 window as seen at the given (server) wall time.
+    static XuniWindowState xuniWindowAt(std::int64_t server_epoch_ms);
+
+private:
+    void threadLoop_();
+    void trackServerDate_(const TransportResult& r);
+    void handleDifficultyBody_(const std::string& body);
+    std::string backoffTimeIso_(std::int32_t attempt_count,
+                                std::optional<long> retry_after_s) const;
+    StepResult probeStep_();
+    StepResult submitStep_();
+
+    IFindJournal& journal_;
+    ITransport& transport_;
+    Config cfg_;
+    MonotonicClock mono_;
+    WallClock wall_;
+    CircuitBreaker breaker_;
+    DrainScheduler scheduler_;
+
+    std::function<void(std::uint32_t)> difficulty_hint_cb_;
+    std::optional<std::uint32_t> last_difficulty_;
+    DifficultyTrend trend_ = DifficultyTrend::Unknown;
+    std::optional<std::int64_t> server_offset_ms_;
+    std::int64_t next_submit_allowed_ms_ = 0;
+    bool last_window_open_ = false;
+
+    Metrics metrics_{};
+    mutable std::mutex state_mutex_;  // guards callback/offset/metrics vs reader threads
+
+    std::thread thread_;
+    std::atomic<bool> running_{false};
+    std::mutex wake_mutex_;
+    std::condition_variable wake_cv_;
+};
+
+}  // namespace treeminer
