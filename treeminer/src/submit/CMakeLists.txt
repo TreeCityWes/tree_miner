@@ -21,6 +21,7 @@ add_library(treeminer_submit STATIC
     CircuitBreaker.cpp
     DrainScheduler.cpp
     SubmissionManager.cpp
+    MarginPolicy.cpp
 )
 
 target_compile_features(treeminer_submit PUBLIC cxx_std_17)

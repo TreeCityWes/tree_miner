@@ -54,6 +54,27 @@ public:
         return out;
     }
 
+    // Same eligibility rules as fetchEligible, restricted to one kind. The LIMIT applies
+    // after the kind filter, exactly as the SQL does — that is the whole point of the
+    // method, so the fake must not shortcut it.
+    std::vector<FindRecord> fetchEligibleOfKind(FindKind kind, const std::string& now_utc,
+                                                std::size_t limit) override {
+        std::vector<FindRecord> out;
+        for (const auto& r : records_) {  // records_ is id-ordered == oldest-first
+            if (r.status != FindStatus::Pending || r.payload.kind != kind) {
+                continue;
+            }
+            if (r.next_attempt_at && *r.next_attempt_at > now_utc) {
+                continue;  // ISO-8601 sorts lexicographically
+            }
+            out.push_back(r);
+            if (out.size() >= limit) {
+                break;
+            }
+        }
+        return out;
+    }
+
     std::vector<FindRecord> fetchAwaitingConfirmation(const std::string& now_utc,
                                                       std::size_t limit) override {
         std::vector<FindRecord> out;
@@ -172,7 +193,13 @@ public:
             switch (r.status) {
                 case FindStatus::Pending: ++c.pending; break;
                 case FindStatus::ParkedDifficulty:
-                case FindStatus::ParkedXuniWindow: ++c.parked; break;
+                    ++c.parked;
+                    ++c.parked_difficulty;
+                    break;
+                case FindStatus::ParkedXuniWindow:
+                    ++c.parked;
+                    ++c.parked_xuni;
+                    break;
                 case FindStatus::Quarantined: ++c.quarantined; break;
                 case FindStatus::Acked: ++c.acked_total; break;
                 case FindStatus::Dead: ++c.dead_total; break;

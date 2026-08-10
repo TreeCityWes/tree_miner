@@ -179,6 +179,8 @@ int main() {
         t.confirm_queue.push_back(ok(200, kBlockRow));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(id).status == FindStatus::Acked);
+        CHECK_EQ(m.metrics().submitted, 2u);
+        CHECK_EQ(m.metrics().resubmitted, 1u);
     }
 
     // --- duplicate + lookup -> Acked ---
@@ -375,15 +377,25 @@ int main() {
         Clocks clk;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
+        // The FIRST observation un-parks even though there is no trend yet. A process that
+        // just restarted has last_difficulty_ empty, and records parked before the restart
+        // may already be valid again at the current floor; waiting for a strict decrease
+        // could strand them indefinitely while difficulty trends upward.
         m.observeDifficulty(104000);
         CHECK(m.difficultyTrend() == treeminer::DifficultyTrend::Unknown);
+        CHECK_EQ(j.unpark_difficulty_calls.size(), static_cast<std::size_t>(1));
+        CHECK_EQ(j.unpark_difficulty_calls[0], 104000u);
+
+        // A rise cannot re-qualify anything, so it must not touch the journal.
         m.observeDifficulty(106000);
         CHECK(m.difficultyTrend() == treeminer::DifficultyTrend::Rising);
-        CHECK(j.unpark_difficulty_calls.empty());
+        CHECK_EQ(j.unpark_difficulty_calls.size(), static_cast<std::size_t>(1));
+
+        // A fall re-qualifies every parked record with m >= the new floor.
         m.observeDifficulty(100000);
         CHECK(m.difficultyTrend() == treeminer::DifficultyTrend::Falling);
-        CHECK_EQ(j.unpark_difficulty_calls.size(), static_cast<std::size_t>(1));
-        CHECK_EQ(j.unpark_difficulty_calls.empty() ? 0 : j.unpark_difficulty_calls[0], 100000u);
+        CHECK_EQ(j.unpark_difficulty_calls.size(), static_cast<std::size_t>(2));
+        CHECK_EQ(j.unpark_difficulty_calls[1], 100000u);
     }
 
     // --- confirmation-retry drain (contract v1.1: fetchAwaitingConfirmation) ---
@@ -488,6 +500,66 @@ int main() {
         t.confirm_queue.push_back(ok(200, kBlockRow));  // then the retry for ee22
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(u).status == FindStatus::Acked);
+    }
+
+    // --- head-of-line blocking: neither kind may starve the other out of the fetch slice ---
+    TEST_CASE("XEN11 drains past a deep closed-window XUNI backlog");
+    {
+        // Regression: fetchEligible used to return one mixed oldest-first LIMIT slice. With
+        // fetch_limit (16) or more XUNI journaled ahead of a XEN11 — normal after any outage
+        // that spans a :55-:05 window — the slice was all-XUNI, none of it selectable while
+        // the window is closed, and the XEN11 sat undelivered until the next window (up to
+        // ~50 minutes) against a perfectly healthy server.
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;  // 00:30 — XUNI window CLOSED
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+
+        // 20 XUNI (> fetch_limit of 16) journaled BEFORE the one XEN11: worst-case ordering.
+        for (int i = 0; i < 20; ++i) {
+            char key[8];
+            std::snprintf(key, sizeof(key), "xu%02d", i);
+            j.append(payload(key, FindKind::XUNI, 100000));
+        }
+        j.append(payload("xen1", FindKind::XEN11, 100000));
+
+        t.submit_queue.push_back(ok(200, "{\"message\": \"Block added\"}"));
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+        CHECK(m.runOnce() == StepResult::Submitted);  // was Idle before the fix
+        CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
+        CHECK_EQ(t.submitted_keys[0], std::string("xen1"));
+        // The closed-window XUNI stayed Pending — parked-in-place, not starved and not dead.
+        CHECK_EQ(j.counts().pending, static_cast<std::size_t>(20));
+    }
+
+    TEST_CASE("closing window: XUNI preempts past a deep XEN11 backlog");
+    {
+        // The symmetric direction: a XEN11 backlog deeper than fetch_limit used to hide any
+        // XUNI from the slice entirely, so the preemption rule ("XUNI cannot wait near the
+        // window's end", PLAN §10.5) had nothing to act on and the XUNI aged out.
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767225600000LL + 4 * 60 * 1000;  // 00:04 — window open, closes at :05
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+
+        for (int i = 0; i < 20; ++i) {
+            char key[8];
+            std::snprintf(key, sizeof(key), "xe%02d", i);
+            j.append(payload(key, FindKind::XEN11, 100000));
+        }
+        j.append(payload("xuni1", FindKind::XUNI, 100000));
+
+        t.submit_queue.push_back(ok(200, "{\"message\": \"Block added\"}"));
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
+        // With <=60 s to the window close, the XUNI goes first even though 20 older XEN11
+        // exist — they remain valid after :05; the XUNI does not.
+        CHECK_EQ(t.submitted_keys[0], std::string("xuni1"));
     }
 
     return testfw::summary("submission_manager");

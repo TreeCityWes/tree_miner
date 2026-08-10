@@ -4,7 +4,10 @@
 #include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <iostream>
 #include <sstream>
+
+#include "../ConsoleLog.h"
 
 namespace treeminer {
 
@@ -73,6 +76,25 @@ bool isBlankBody(const std::string& s) {
         }
     }
     return true;
+}
+
+const char* logKind(FindKind kind) {
+    return kind == FindKind::XEN11 ? "XEN11" : "XUNI";
+}
+
+const char* logStatus(FindStatus status) {
+    switch (status) {
+        case FindStatus::Pending: return "Pending";
+        case FindStatus::Submitting: return "Submitting";
+        case FindStatus::AcceptedUnconfirmed: return "AcceptedUnconfirmed";
+        case FindStatus::Acked: return "Acked";
+        case FindStatus::ParkedDifficulty: return "ParkedDifficulty";
+        case FindStatus::ParkedXuniWindow: return "ParkedXuniWindow";
+        case FindStatus::Quarantined: return "Quarantined";
+        case FindStatus::Dead: return "Dead";
+        case FindStatus::PermanentlyInvalid: return "PermanentlyInvalid";
+    }
+    return "Unknown";
 }
 
 }  // namespace
@@ -215,8 +237,12 @@ void SubmissionManager::setDifficultyHintCallback(std::function<void(std::uint32
 
 void SubmissionManager::observeDifficulty(std::uint32_t difficulty) {
     bool decreased = false;
+    bool first_observation = false;
+    std::optional<std::uint32_t> previous;
+    DifficultyTrend new_trend = DifficultyTrend::Unknown;
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
+        previous = last_difficulty_;
         if (last_difficulty_) {
             if (difficulty > *last_difficulty_) {
                 trend_ = DifficultyTrend::Rising;
@@ -226,12 +252,41 @@ void SubmissionManager::observeDifficulty(std::uint32_t difficulty) {
             } else {
                 trend_ = DifficultyTrend::Flat;
             }
+        } else {
+            first_observation = true;
         }
         last_difficulty_ = difficulty;
+        new_trend = trend_;
     }
-    if (decreased) {
-        // PLAN §3.3(b): a falling floor re-qualifies parked finds with m >= current.
-        journal_.unparkForDifficulty(difficulty);
+    std::size_t unparked = 0;
+    // PLAN §3.3(b): a falling floor re-qualifies parked finds with m >= current.
+    //
+    // The first observation of a process must un-park too, even though there is no trend to
+    // compare against. A restart begins with last_difficulty_ empty, so gating purely on a
+    // strict decrease left finds parked that were already valid again — they would wait for
+    // some LATER decrease that may never come while difficulty trends upward. Recovering
+    // them is the whole point of parking rather than dropping (PLAN §3.4). The UPDATE is
+    // bounded to ParkedDifficulty rows with m >= current, so a no-op costs nothing.
+    if (decreased || first_observation) {
+        unparked = journal_.unparkForDifficulty(difficulty);
+    }
+    if (!previous || *previous != difficulty) {
+        const char* trend = new_trend == DifficultyTrend::Rising ? "rising"
+                            : new_trend == DifficultyTrend::Falling ? "falling"
+                            : new_trend == DifficultyTrend::Flat ? "flat"
+                                                                 : "unknown";
+        std::ostringstream message;
+        message << "previous=";
+        if (previous) {
+            message << *previous;
+        } else {
+            message << "unknown";
+        }
+        message << " -> current=" << difficulty
+                << " | trend=" << trend
+                << " | unparked=" << unparked;
+        ConsoleLog::event(decreased ? ConsoleLog::Level::Info : ConsoleLog::Level::Warn,
+                          "DIFFICULTY", message.str());
     }
 }
 
@@ -248,6 +303,73 @@ std::optional<std::int64_t> SubmissionManager::serverClockOffsetMs() const {
 SubmissionManager::Metrics SubmissionManager::metrics() const {
     std::lock_guard<std::mutex> lk(state_mutex_);
     return metrics_;
+}
+
+// --- difficulty margin (PLAN §5, §10.7) ---
+
+void SubmissionManager::setMarginCallback(std::function<void(std::uint32_t)> cb) {
+    std::lock_guard<std::mutex> lk(state_mutex_);
+    margin_cb_ = std::move(cb);
+}
+
+std::int64_t SubmissionManager::outageDurationMs() const {
+    const std::int64_t started = outage_started_ms_.load();
+    if (started == 0) {
+        return 0;
+    }
+    const std::int64_t elapsed = mono_() - started;
+    return elapsed > 0 ? elapsed : 0;
+}
+
+void SubmissionManager::updateMargin_() {
+    const std::int64_t now = mono_();
+
+    // Outage clock: the /verify path being OPEN is what puts finds at risk. Tracked here
+    // rather than in CircuitBreaker so the breaker stays a pure state machine.
+    const bool open = breaker_.state() == CircuitBreaker::State::Open;
+    if (open) {
+        if (outage_started_ms_.load() == 0) {
+            outage_started_ms_.store(now);
+        }
+    } else {
+        outage_started_ms_.store(0);
+    }
+
+    if (cfg_.margin.mode == MarginMode::Off) {
+        return;  // margin_kib_ stays 0; never touch the mine loop when the feature is off
+    }
+
+    // Rate-limit: Auto reads journal counts, and the ramp moves on a 300 s scale anyway.
+    if (margin_eval_started_ && (now - last_margin_eval_ms_) < cfg_.margin_eval_interval_ms) {
+        return;
+    }
+    last_margin_eval_ms_ = now;
+    margin_eval_started_ = true;
+
+    MarginInputs in;
+    in.breaker_open = open;
+    in.outage_ms = open ? (now - outage_started_ms_.load()) : 0;
+    if (cfg_.margin.mode == MarginMode::Auto) {
+        // Backlog = everything journaled that has not reached a terminal state. Parked and
+        // unconfirmed records count: they are finds we still owe the operator.
+        const IFindJournal::Counts c = journal_.counts();
+        in.backlog = c.pending + c.parked + c.accepted_unconfirmed + c.quarantined;
+    }
+
+    const std::uint32_t next = computeMargin(cfg_.margin, in);
+    if (next == margin_kib_.load()) {
+        return;
+    }
+    margin_kib_.store(next);
+    std::function<void(std::uint32_t)> cb;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        ++metrics_.margin_changes;
+        cb = margin_cb_;
+    }
+    if (cb) {
+        cb(next);
+    }
 }
 
 void SubmissionManager::trackServerDate_(const TransportResult& r) {
@@ -297,6 +419,9 @@ std::string SubmissionManager::backoffTimeIso_(std::int32_t attempt_count,
 // --- the scheduling step ---
 
 SubmissionManager::StepResult SubmissionManager::runOnce() {
+    // Headroom is re-evaluated first so the outage clock advances even on steps that do no
+    // network work at all (an OPEN breaker whose probe is not yet due still ages the outage).
+    updateMargin_();
     if (breaker_.state() == CircuitBreaker::State::Open) {
         // OPEN: probes only — no /verify traffic and no confirmation lookups either
         // (they target the same host; hammering /get_block during an outage helps nobody).
@@ -350,15 +475,30 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     }
     last_window_open_ = window.open;
 
-    std::vector<FindRecord> eligible = journal_.fetchEligible(isoUtc(wall_()), cfg_.fetch_limit);
+    // Fetch per kind rather than taking one mixed oldest-first slice. A single LIMITed slice
+    // lets either kind starve the other, and both directions are reachable in normal
+    // operation:
+    //   * XUNI is journaled Pending whenever it is found, including outside a window, but is
+    //     not submittable then. `fetch_limit` such records ahead of a XEN11 backlog produced
+    //     a slice with nothing selectable in it — the drain reported Idle and NO XEN11 was
+    //     submitted until the next :55 window, against a perfectly healthy server.
+    //   * Symmetrically, a XEN11 backlog deeper than `fetch_limit` could hide a XUNI whose
+    //     window is closing — the one record that genuinely cannot wait.
+    // Asking per kind lets DrainScheduler apply its priority rules (XEN11 first; XUNI
+    // preempts near the window end) to what actually exists, not to whatever the first
+    // `limit` rows happened to be.
+    const std::string now_iso = isoUtc(wall_());
+    std::vector<FindRecord> eligible =
+        journal_.fetchEligibleOfKind(FindKind::XEN11, now_iso, cfg_.fetch_limit);
     bool xuni_pressure = false;
-    for (const FindRecord& r : eligible) {
-        if (r.payload.kind == FindKind::XUNI) {
-            xuni_pressure = true;
-            break;
-        }
+    if (window.open) {
+        // Only worth asking while the window is open: outside it, XUNI is never selectable.
+        std::vector<FindRecord> xuni =
+            journal_.fetchEligibleOfKind(FindKind::XUNI, now_iso, cfg_.fetch_limit);
+        xuni_pressure = !xuni.empty();
+        eligible.insert(eligible.end(), xuni.begin(), xuni.end());
     }
-    breaker_.setXuniPressure(xuni_pressure && window.open);
+    breaker_.setXuniPressure(xuni_pressure);
     if (eligible.empty()) {
         return StepResult::Idle;
     }
@@ -377,6 +517,8 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     trackServerDate_(res);
     const int status = res.transport_ok ? res.http_status : kTransportError;
     Classification c = classify(status, res.body, rec->payload.kind, res.retry_after);
+    const std::optional<std::uint32_t> known_difficulty_before_response =
+        lastObservedDifficulty();
 
     // Difficulty hint from a 401 body: update the cache without waiting for the poller.
     if (c.server_difficulty_hint) {
@@ -421,6 +563,45 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         }
     }
 
+    std::ostringstream submission_message;
+    submission_message << "id=" << rec->id
+                       << " | attempt=" << (rec->attempt_count + 1)
+                       << " | kind=" << logKind(rec->payload.kind)
+                       << " | mined_m=" << rec->payload.memory_cost
+                       << " | server_m=";
+    if (known_difficulty_before_response) {
+        submission_message << *known_difficulty_before_response;
+    } else {
+        submission_message << "unknown";
+    }
+    submission_message << " | http=";
+    if (res.transport_ok) {
+        submission_message << res.http_status;
+    } else {
+        submission_message << "transport_error";
+    }
+    if (c.server_difficulty_hint) {
+        submission_message << " | hint_m=" << *c.server_difficulty_hint
+                           << " | margin="
+                           << (static_cast<std::int64_t>(rec->payload.memory_cost) -
+                               static_cast<std::int64_t>(*c.server_difficulty_hint));
+    } else if (known_difficulty_before_response) {
+        submission_message << " | margin="
+                           << (static_cast<std::int64_t>(rec->payload.memory_cost) -
+                               static_cast<std::int64_t>(*known_difficulty_before_response));
+    }
+    submission_message << " | " << logStatus(c.next_status)
+                       << " | " << c.reason;
+    const ConsoleLog::Level submission_level =
+        c.next_status == FindStatus::Acked ? ConsoleLog::Level::Ok
+        : c.next_status == FindStatus::ParkedDifficulty ||
+          c.next_status == FindStatus::ParkedXuniWindow ? ConsoleLog::Level::Park
+        : c.next_status == FindStatus::Pending ? ConsoleLog::Level::Retry
+        : c.next_status == FindStatus::PermanentlyInvalid ||
+          c.next_status == FindStatus::Quarantined ? ConsoleLog::Level::Error
+                                                    : ConsoleLog::Level::Info;
+    ConsoleLog::event(submission_level, "SUBMIT", submission_message.str());
+
     if (c.next_status == FindStatus::Pending && !next_attempt) {
         std::optional<long> retry_after_s;
         if (status == 429 && res.retry_after) {
@@ -464,6 +645,9 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
         ++metrics_.submitted;
+        if (rec->attempt_count > 0) {
+            ++metrics_.resubmitted;
+        }
         if (!res.transport_ok) {
             ++metrics_.transport_failures;
         }
@@ -523,6 +707,21 @@ SubmissionManager::StepResult SubmissionManager::confirmStep_() {
                                conf.transport_ok ? std::optional<int>(conf.http_status)
                                                  : std::nullopt,
                                conf.body, next_attempt, isoUtc(wall_()));
+        std::ostringstream confirmation_message;
+        confirmation_message << "id=" << rec.id
+                             << " | attempt=" << (rec.attempt_count + 1)
+                             << " | mined_m=" << rec.payload.memory_cost
+                             << " | http=";
+        if (conf.transport_ok) {
+            confirmation_message << conf.http_status;
+        } else {
+            confirmation_message << "transport_error";
+        }
+        confirmation_message << " | " << logStatus(c.next_status)
+                             << " | " << c.reason;
+        ConsoleLog::event(c.next_status == FindStatus::Acked ? ConsoleLog::Level::Ok
+                                                               : ConsoleLog::Level::Retry,
+                          "CONFIRM", confirmation_message.str());
         {
             std::lock_guard<std::mutex> lk(state_mutex_);
             ++metrics_.confirmation_retries;

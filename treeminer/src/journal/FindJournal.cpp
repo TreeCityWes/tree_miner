@@ -375,13 +375,20 @@ std::int64_t FindJournal::append(const FoundPayload& payload) {
 
 std::vector<FindRecord> FindJournal::fetchByStatusLocked(const char* statusLiteral,
                                                          const std::string& now_utc,
-                                                         std::size_t limit) {
+                                                         std::size_t limit,
+                                                         const char* kindLiteral) {
     std::string sql = "SELECT ";
     sql += kRecordColumns;
     sql += " FROM finds"
            " WHERE status = '";
     sql += statusLiteral;  // trusted compile-time literal, see header
-    sql += "'   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)"
+    sql += "'";
+    if (kindLiteral != nullptr) {
+        sql += " AND kind = '";
+        sql += kindLiteral;  // trusted compile-time literal (to_string(FindKind))
+        sql += "'";
+    }
+    sql += "   AND (next_attempt_at IS NULL OR next_attempt_at <= ?1)"
            " ORDER BY id ASC LIMIT ?2;";
     Statement select(db_, sql.c_str());
     select.bindText(1, now_utc);
@@ -398,6 +405,15 @@ std::vector<FindRecord> FindJournal::fetchEligible(const std::string& now_utc,
                                                    std::size_t limit) {
     std::lock_guard<std::mutex> lock(mutex_);
     return fetchByStatusLocked("Pending", now_utc, limit);
+}
+
+std::vector<FindRecord> FindJournal::fetchEligibleOfKind(FindKind kind,
+                                                         const std::string& now_utc,
+                                                         std::size_t limit) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    // to_string(FindKind) yields the exact literal stored in the kind column ('XEN11'/'XUNI')
+    // and is a fixed compile-time string, never caller input.
+    return fetchByStatusLocked("Pending", now_utc, limit, to_string(kind));
 }
 
 std::vector<FindRecord> FindJournal::fetchAwaitingConfirmation(const std::string& now_utc,
@@ -554,7 +570,13 @@ IFindJournal::Counts FindJournal::counts() {
         switch (statusFromString(select.columnText(0))) {
             case FindStatus::Pending:             result.pending += count; break;
             case FindStatus::ParkedDifficulty:
-            case FindStatus::ParkedXuniWindow:    result.parked += count; break;
+                result.parked += count;
+                result.parked_difficulty += count;
+                break;
+            case FindStatus::ParkedXuniWindow:
+                result.parked += count;
+                result.parked_xuni += count;
+                break;
             case FindStatus::Quarantined:         result.quarantined += count; break;
             case FindStatus::Acked:               result.acked_total += count; break;
             case FindStatus::Dead:                result.dead_total += count; break;

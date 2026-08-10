@@ -473,6 +473,8 @@ TEST_CASE(recover_on_startup_counts) {
     const IFindJournal::Counts counts = journal.counts();
     CHECK_EQ(counts.pending, 2u);
     CHECK_EQ(counts.parked, 2u);
+    CHECK_EQ(counts.parked_difficulty, 1u);
+    CHECK_EQ(counts.parked_xuni, 1u);
     CHECK_EQ(counts.quarantined, 1u);
     CHECK_EQ(counts.acked_total, 1u);
     CHECK_EQ(counts.dead_total, 1u);
@@ -582,6 +584,47 @@ TEST_CASE(difficulty_seen_round_trip) {
     CHECK_EQ(raw.scalarInt(
                  "SELECT value FROM difficulty_seen ORDER BY rowid LIMIT 1;"),
              1727);
+}
+
+TEST_CASE(fetch_eligible_of_kind) {
+    TempDb tmp("fetch_eligible_of_kind");
+    FindJournal journal(tmp.path);
+
+    // Interleave the kinds so the filter, not insertion order, does the work. Three XUNI
+    // first — the head-of-line shape that used to starve XEN11 out of a mixed LIMIT slice.
+    journal.append(makePayload("71", FindKind::XUNI));
+    journal.append(makePayload("72", FindKind::XUNI));
+    journal.append(makePayload("73", FindKind::XUNI));
+    const std::int64_t xenId = journal.append(makePayload("74", FindKind::XEN11));
+    journal.append(makePayload("75", FindKind::XUNI));
+
+    // A LIMIT smaller than the XUNI backlog still reaches the XEN11: the limit applies
+    // after the kind filter. This is the exact guarantee fetchEligible cannot give.
+    const auto xen = journal.fetchEligibleOfKind(FindKind::XEN11, kNow, 2);
+    CHECK_EQ(xen.size(), 1u);
+    CHECK_EQ(xen[0].id, xenId);
+    CHECK_EQ(xen[0].payload.kind == FindKind::XEN11, true);
+
+    // Kind slices honor oldest-first ordering and the LIMIT within the kind.
+    const auto xuni = journal.fetchEligibleOfKind(FindKind::XUNI, kNow, 3);
+    CHECK_EQ(xuni.size(), 3u);
+    CHECK(xuni[0].id < xuni[1].id);
+    CHECK(xuni[1].id < xuni[2].id);
+
+    // Backoff eligibility applies identically: push one XUNI into the future and it
+    // disappears from its kind slice.
+    journal.recordAttempt(xuni[0].id, classify(FindStatus::Pending, "retry later"), 503,
+                          "unavailable", std::string("2999-01-01T00:00:00Z"), kNow);
+    const auto after = journal.fetchEligibleOfKind(FindKind::XUNI, kNow, 10);
+    CHECK_EQ(after.size(), 3u);  // 4 XUNI total, one backed off
+    for (const auto& r : after) {
+        CHECK(r.id != xuni[0].id);
+    }
+
+    // A kind with no eligible rows returns empty, never rows of the other kind.
+    journal.recordAttempt(xenId, classify(FindStatus::Acked, "confirmed"), 200, "OK",
+                          std::nullopt, kNow);
+    CHECK_EQ(journal.fetchEligibleOfKind(FindKind::XEN11, kNow, 10).size(), 0u);
 }
 
 TEST_CASE(reopen_persistence) {

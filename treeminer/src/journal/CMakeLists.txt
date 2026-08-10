@@ -23,6 +23,7 @@ find_package(unofficial-sqlite3 CONFIG REQUIRED)
 
 add_library(treeminer_journal STATIC
     FindJournal.cpp
+    FallbackSink.cpp
 )
 
 # Headers are included relative to src/ ("journal/...", "treeminer/...").

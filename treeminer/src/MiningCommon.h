@@ -40,6 +40,16 @@ extern std::atomic<int> globalDevfeePermillage; // per 1000
 extern std::string machineId;
 
 extern std::atomic<int> globalDifficulty;
+
+// Headroom in KiB baked into newly mined hashes on top of globalDifficulty (PLAN §5, §10.7).
+// Published by the SubmissionManager's margin policy; 0 unless an operator enables it.
+extern std::atomic<int> globalDifficultyMargin;
+
+// The memory cost new batches must actually mine at. Every producer of a hash — batch sizing,
+// the kernel request, and the m= baked into the PHC string — must agree on this one value,
+// or the miner would advertise a cost it did not pay.
+int effectiveMiningDifficulty();
+
 extern std::mutex mtx;
 extern std::atomic<bool> running;
 extern std::mutex coutmtx;
@@ -71,6 +81,25 @@ struct gpuInfo
 };
 extern std::map<int, std::pair<gpuInfo, std::chrono::steady_clock::time_point>> globalGpuInfos;
 extern std::mutex globalGpuInfosMutex;
+
+// Snapshot of the durable-submission layer for the stats endpoint (PLAN §11.2). Kept as
+// plain data so StatReporter/LocalServer need no journal or submitter headers, and so the
+// stats path never shares fate with the submitter thread.
+struct TreeminerStats {
+	int difficulty = 0;             // last observed network difficulty
+	int margin_in_effect = 0;       // KiB of headroom currently baked into new hashes
+	int effective_difficulty = 0;   // difficulty + margin: what new hashes actually cost
+	const char* margin_mode = "off";
+	const char* breaker_state = "closed";
+	long long outage_ms = 0;        // 0 unless the /verify path is currently open
+	double drain_rate_per_second = 0.0;
+	std::size_t pending = 0, parked = 0, quarantined = 0;
+	std::size_t acked_total = 0, dead_total = 0;
+	std::size_t accepted_unconfirmed = 0, permanently_invalid = 0;
+};
+// Set by main() once the journal and submitter exist; empty until then (the stats endpoint
+// starts before mining does). Returns false when the submission layer is not running.
+extern std::function<bool(TreeminerStats&)> globalTreeminerStatsProvider;
 
 using SubmitCallback = std::function<void(const std::string& hexsalt, const std::string& key, const std::string& hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate)>;
 using StatCallback = std::function<void(const gpuInfo gpuinfo)>;

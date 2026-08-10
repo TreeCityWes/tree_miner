@@ -57,6 +57,11 @@ public:
     std::vector<FindRecord> fetchEligible(const std::string& now_utc,
                                           std::size_t limit) override;
 
+    // Same eligibility, ordering and backoff semantics as fetchEligible, restricted to one
+    // kind so neither kind can be starved out of a mixed LIMIT slice by the other.
+    std::vector<FindRecord> fetchEligibleOfKind(FindKind kind, const std::string& now_utc,
+                                                std::size_t limit) override;
+
     // Contract v1.1: oldest-first AcceptedUnconfirmed rows whose next_attempt_at is NULL
     // or <= now_utc, so /get_block confirmation can be re-driven after a transient lookup
     // failure. Same eligibility/backoff semantics and row hydration as fetchEligible.
@@ -106,9 +111,11 @@ private:
     void execOrThrow(const char* sql, const char* context);
     // Shared query body for fetchEligible / fetchAwaitingConfirmation. Caller holds mutex_;
     // statusLiteral must be a trusted compile-time status string, never user input.
+    // kindLiteral is nullptr for "any kind", otherwise a trusted compile-time kind string.
     std::vector<FindRecord> fetchByStatusLocked(const char* statusLiteral,
                                                 const std::string& now_utc,
-                                                std::size_t limit);
+                                                std::size_t limit,
+                                                const char* kindLiteral = nullptr);
 
     sqlite3* db_ = nullptr;
     std::mutex mutex_;  // guards db_ across all public methods

@@ -1,4 +1,5 @@
 #include <iostream>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <thread>
@@ -18,6 +19,7 @@
 #include "MineUnit.h"
 #include "AppConfig.h"
 #include "Logger.h"
+#include "ConsoleLog.h"
 #include "Argon2idHasher.h"
 #include <nlohmann/json.hpp>
 #include "HttpClient.h"
@@ -30,6 +32,7 @@
 #include "ProcessMonitor.h"
 #include "DifficultyManager.h"
 #include "treeminer/PhcAssembler.h"
+#include "journal/FallbackSink.h"
 #include "journal/FindJournal.h"
 #include "submit/HttpTransport.h"
 #include "submit/SubmissionManager.h"
@@ -51,6 +54,17 @@ std::string globalMqttBroker = "";
 std::string globalWorkerId = "";
 std::unique_ptr<PlatformManager> globalPlatformManager;
 std::string globalTestBlockPattern = "";
+
+// Difficulty-headroom policy, resolved from config.txt + command line before mining starts
+// and handed to the SubmissionManager, which owns the ramp (PLAN §5, §10.7).
+static treeminer::MarginConfig globalMarginConfig;
+
+// Journal database path (PLAN §5 `journal_path`), resolved from config.txt + command line.
+// The default is CWD-relative for drop-in compatibility with existing deployments, but the
+// resolved ABSOLUTE path is logged at startup: a miner launched from an unexpected working
+// directory (systemd, HiveOS wrappers) would otherwise silently open a fresh empty journal
+// and strand every queued find in the orphaned file.
+static std::string globalJournalPath = "treeminer-journal.db";
 
 #ifdef _WIN32
 BOOL ctrlHandler(DWORD fdwCtrlType) {
@@ -123,7 +137,9 @@ static void runMiningOnDevice(ComputeBackend& backend,
 
     while (running)
     {
-        MineUnit unit(backend, globalDifficulty, submitCallback, statCallback);
+        // difficulty + margin: the unit mines, sizes its batch, and bakes m= from this one
+        // value (MiningCommon.cpp). A margin change breaks the loop and rebuilds the unit.
+        MineUnit unit(backend, effectiveMiningDifficulty(), submitCallback, statCallback);
         int rc = unit.runMineLoop();
         if (rc < 0)
         {
@@ -184,7 +200,11 @@ int main(int argc, const char *const *argv)
             ("mqtt-broker", po::value<std::string>(), "MQTT broker URI for platform mode (e.g. tcp://broker:1883)")
             ("worker-id", po::value<std::string>(), "override worker ID for platform registration")
             ("testBlockPattern", po::value<std::string>(), "override block detection pattern for testing (default: XEN11)")
-            ("batchSize", po::value<int>(), "limit GPU batch size (reduces VRAM usage)");
+            ("batchSize", po::value<int>(), "limit GPU batch size (reduces VRAM usage)")
+            ("difficultyMarginMode", po::value<std::string>(), "difficulty headroom policy: off (default) | fixed | auto")
+            ("difficultyMargin", po::value<int>(), "headroom in KiB; fixed mode: the constant, auto mode: one ramp step (default 1000)")
+            ("difficultyMarginMax", po::value<int>(), "auto mode only: ceiling on the headroom ramp in KiB (default 5000)")
+            ("journalPath", po::value<std::string>(), "find journal database file (default: treeminer-journal.db in the working directory)");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
         po::notify(vm);
@@ -207,6 +227,84 @@ int main(int argc, const char *const *argv)
         if(vm.count("batchSize")){
             globalMaxBatchSize = vm["batchSize"].as<int>();
             std::cout << "Max batch size override: " << globalMaxBatchSize << std::endl;
+        }
+
+        // --- difficulty margin (PLAN §5, §10.7) ---
+        // config.txt supplies the defaults; command-line flags override. An unparseable value
+        // is fatal rather than ignored: silently mining at the wrong memory cost would show up
+        // only as unexplained 401s hours later.
+        {
+            ConfigManager marginConfig(CONFIG_FILENAME);
+            marginConfig.loadConfig();
+            auto configuredValue = [&marginConfig](const std::string& key) {
+                return marginConfig.getConfigValue(key);
+            };
+
+            std::string modeText = configuredValue("difficulty_margin_mode");
+            if (vm.count("difficultyMarginMode")) {
+                modeText = vm["difficultyMarginMode"].as<std::string>();
+            }
+            if (!modeText.empty() && !treeminer::parseMarginMode(modeText, globalMarginConfig.mode)) {
+                std::cerr << "Invalid difficulty margin mode '" << modeText
+                          << "' (expected: off | fixed | auto)." << std::endl;
+                return -1;
+            }
+
+            auto readPositiveInt = [&](const std::string& key, const char* flag,
+                                       std::uint32_t& target) -> bool {
+                std::string text = configuredValue(key);
+                if (vm.count(flag)) {
+                    text = std::to_string(vm[flag].as<int>());
+                }
+                if (text.empty()) {
+                    return true;
+                }
+                try {
+                    const long long value = std::stoll(text);
+                    if (value < 0 || value > 100000000LL) {
+                        std::cerr << "Value for " << key << " (" << text
+                                  << ") is out of range (0-100000000)." << std::endl;
+                        return false;
+                    }
+                    target = static_cast<std::uint32_t>(value);
+                    return true;
+                } catch (const std::exception&) {
+                    std::cerr << "Value for " << key << " (" << text
+                              << ") is not a number." << std::endl;
+                    return false;
+                }
+            };
+            if (!readPositiveInt("difficulty_margin", "difficultyMargin",
+                                 globalMarginConfig.margin_kib) ||
+                !readPositiveInt("difficulty_margin_max", "difficultyMarginMax",
+                                 globalMarginConfig.max_kib)) {
+                return -1;
+            }
+
+            if (globalMarginConfig.mode != treeminer::MarginMode::Off) {
+                std::cout << "Difficulty margin: mode=" << treeminer::to_string(globalMarginConfig.mode)
+                          << " step=" << globalMarginConfig.margin_kib << " KiB";
+                if (globalMarginConfig.mode == treeminer::MarginMode::Auto) {
+                    std::cout << " max=" << globalMarginConfig.max_kib << " KiB";
+                } else {
+                    // Fixed headroom is paid for on every single hash, forever.
+                    globalDifficultyMargin = static_cast<int>(globalMarginConfig.margin_kib);
+                }
+                std::cout << std::endl;
+            }
+
+            // --- journal path (PLAN §5 `journal_path`) ---
+            // Same precedence as the margin keys: config.txt supplies the default, the
+            // command line overrides. An empty value keeps the compatibility default.
+            {
+                std::string pathText = configuredValue("journal_path");
+                if (vm.count("journalPath")) {
+                    pathText = vm["journalPath"].as<std::string>();
+                }
+                if (!pathText.empty()) {
+                    globalJournalPath = pathText;
+                }
+            }
         }
 
         AppConfig appConfig(CONFIG_FILENAME);
@@ -354,31 +452,102 @@ int main(int argc, const char *const *argv)
     std::unique_ptr<treeminer::FindJournal> findJournal;
     std::unique_ptr<treeminer::HttpTransport> findTransport;
     std::unique_ptr<treeminer::SubmissionManager> submissionManager;
+    // Last line of defense (audit finding A): when FindJournal::append throws, the find
+    // falls into this append-only fsync'd JSONL sink instead of being dropped, and the
+    // next boot drains it back into the journal (idempotent by key). Constructed
+    // unconditionally — it is inert until the first failure.
+    treeminer::FallbackSink fallbackSink(globalJournalPath + ".fallback.jsonl");
     try {
-        findJournal = std::make_unique<treeminer::FindJournal>("treeminer-journal.db");
+        findJournal = std::make_unique<treeminer::FindJournal>(globalJournalPath);
     } catch (const treeminer::JournalError& e) {
-        std::cerr << RED << "FATAL: cannot open find journal: " << e.what() << RESET << std::endl;
+        ConsoleLog::event(ConsoleLog::Level::Error, "JOURNAL",
+                          "cannot open " + globalJournalPath + " | " + e.what());
         return -1;
     }
     {
+        // Log the RESOLVED absolute path. A relative path silently depends on the CWD the
+        // process happened to start in; when a service launches from an unexpected directory
+        // this line is the difference between "why is my journal empty" and an instant
+        // diagnosis (the old queued finds are sitting in the other directory's file).
+        std::error_code pathEc;
+        const auto absolutePath = std::filesystem::absolute(globalJournalPath, pathEc);
+        ConsoleLog::event(ConsoleLog::Level::Info, "JOURNAL",
+                          "path=" + (pathEc ? globalJournalPath : absolutePath.string()));
+
+        // Drain the last-resort sink BEFORE recovery so any find that fell into it while
+        // SQLite was broken is counted and drained like every other journaled find this
+        // boot. Import is idempotent by key; the file only exists if a previous run hit a
+        // journal write failure, so file_present alone is worth a warning.
+        const auto sinkStats = treeminer::FallbackSink::importInto(
+            *findJournal, globalJournalPath + ".fallback.jsonl");
+        if (sinkStats.file_present) {
+            std::ostringstream drained;
+            drained << "fallback sink drained | imported=" << sinkStats.imported
+                    << " | malformed=" << sinkStats.malformed
+                    << " — a previous run could not write the journal; investigate why";
+            ConsoleLog::event(sinkStats.malformed > 0 ? ConsoleLog::Level::Error
+                                                      : ConsoleLog::Level::Warn,
+                              "JOURNAL", drained.str());
+        }
+
         auto rec = findJournal->recoverOnStartup();
-        std::cout << "Journal recovered: " << rec.pending << " pending, "
-                  << rec.accepted_unconfirmed << " awaiting confirmation, "
-                  << (rec.parked_difficulty + rec.parked_xuni) << " parked, "
-                  << rec.acked << " acked, " << rec.quarantined << " quarantined" << std::endl;
+        std::ostringstream recovered;
+        recovered << "recovered"
+                  << " | pending=" << rec.pending
+                  << " | unconfirmed=" << rec.accepted_unconfirmed
+                  << " | parked=" << (rec.parked_difficulty + rec.parked_xuni)
+                  << " | acked=" << rec.acked
+                  << " | quarantined=" << rec.quarantined;
+        ConsoleLog::event(ConsoleLog::Level::Info, "JOURNAL", recovered.str());
     }
     if (!isTestFixedDiff) {
         findTransport = std::make_unique<treeminer::HttpTransport>(globalRpcLink, machineId);
-        submissionManager = std::make_unique<treeminer::SubmissionManager>(*findJournal, *findTransport);
+        treeminer::SubmissionManager::Config submitConfig;
+        submitConfig.margin = globalMarginConfig;
+        submissionManager = std::make_unique<treeminer::SubmissionManager>(
+            *findJournal, *findTransport, submitConfig);
+        // The ramp publishes here; the mine loop picks it up on its next batch boundary.
+        submissionManager->setMarginCallback([](std::uint32_t kib) {
+            const int previous = globalDifficultyMargin.exchange(static_cast<int>(kib));
+            if (previous != static_cast<int>(kib)) {
+                std::ostringstream message;
+                message << previous << " -> " << kib
+                        << " | effective_m=" << effectiveMiningDifficulty()
+                        << " | headroom costs proportional hashrate";
+                ConsoleLog::event(ConsoleLog::Level::Info, "MARGIN", message.str());
+            }
+        });
         submissionManager->setDifficultyHintCallback([](std::uint32_t d) {
             std::lock_guard<std::mutex> lock(mtx);
             if (globalDifficulty != static_cast<int>(d)) {
                 globalDifficulty = static_cast<int>(d);
-                std::cout << "Difficulty updated from server hint: " << d << std::endl;
             }
         });
         globalDifficultyObserver = [&manager = *submissionManager](std::uint32_t d) {
             manager.observeDifficulty(d);
+        };
+        globalTreeminerStatsProvider = [&manager = *submissionManager,
+                                        &journal = *findJournal](TreeminerStats& out) {
+            out.difficulty = globalDifficulty.load();
+            out.margin_in_effect = static_cast<int>(manager.marginInEffect());
+            out.effective_difficulty = effectiveMiningDifficulty();
+            out.margin_mode = treeminer::to_string(globalMarginConfig.mode);
+            switch (manager.breakerState()) {
+                case treeminer::CircuitBreaker::State::Closed:   out.breaker_state = "up"; break;
+                case treeminer::CircuitBreaker::State::Open:     out.breaker_state = "down"; break;
+                case treeminer::CircuitBreaker::State::HalfOpen: out.breaker_state = "half-open"; break;
+            }
+            out.outage_ms = static_cast<long long>(manager.outageDurationMs());
+            out.drain_rate_per_second = manager.drainRatePerSecond();
+            const treeminer::IFindJournal::Counts counts = journal.counts();
+            out.pending = counts.pending;
+            out.parked = counts.parked;
+            out.quarantined = counts.quarantined;
+            out.acked_total = counts.acked_total;
+            out.dead_total = counts.dead_total;
+            out.accepted_unconfirmed = counts.accepted_unconfirmed;
+            out.permanently_invalid = counts.permanently_invalid;
+            return true;
         };
         submissionManager->start();
     }
@@ -389,7 +558,9 @@ int main(int argc, const char *const *argv)
         int cachedDifficulty = loadCachedDifficulty();
         if (cachedDifficulty > 0) {
             globalDifficulty = cachedDifficulty;
-            std::cout << "Seeded difficulty from local cache: " << cachedDifficulty << std::endl;
+            ConsoleLog::event(ConsoleLog::Level::Info, "DIFFICULTY",
+                              "seeded from cache | current=" +
+                                  std::to_string(cachedDifficulty));
         } else {
             globalDifficulty = 42069;
         }
@@ -404,7 +575,7 @@ int main(int argc, const char *const *argv)
     uploadThread.detach();
 
     Logger logger("log", 1024 * 1024);
-    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
+    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager, &fallbackSink](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
 
         // Immutable payload capture: the PHC string is assembled once from the parameters the
         // GPU batch actually used. Upstream re-hashed with globalDifficulty at submit time and
@@ -432,30 +603,74 @@ int main(int argc, const char *const *argv)
         // Journal-first: durable before any network attempt. A journal failure is the one
         // event this miner must never be quiet about.
         bool journaled = false;
+        std::int64_t journalId = -1;
         try {
-            findJournal->append(payload);
+            journalId = findJournal->append(payload);
             journaled = true;
         } catch (const treeminer::JournalError& e) {
-            std::cout << std::endl << RED << "JOURNAL WRITE FAILED - find at risk: " << e.what() << RESET << std::endl;
-            logger.log("JOURNAL WRITE FAILED key=" + key + " error=" + e.what());
+            // Last line of defense: the fsync'd fallback sink. Its failure domain is
+            // deliberately disjoint from SQLite's (no locks, no WAL, plain O_APPEND), so
+            // most journal failures still end in durable capture. The next boot imports
+            // the sink back into the journal (idempotent by key).
+            const bool sunk = fallbackSink.append(payload);
+            if (sunk) {
+                ConsoleLog::event(ConsoleLog::Level::Warn, "JOURNAL",
+                                  "write failed; find captured in fallback sink | " +
+                                  fallbackSink.path() + " | " + std::string(e.what()));
+                logger.log("JOURNAL WRITE FAILED, fallback sink OK error=" +
+                           std::string(e.what()));
+            } else {
+                // Both durability paths failed — this find really is at risk, and the
+                // disk itself is the prime suspect. Loudest severity we have.
+                ConsoleLog::event(ConsoleLog::Level::Error, "JOURNAL",
+                                  "write failed AND fallback sink failed — find at risk | " +
+                                  std::string(e.what()));
+                logger.log("JOURNAL WRITE FAILED, fallback sink FAILED error=" +
+                           std::string(e.what()));
+            }
         }
-        logger.log("found key=" + key + " hash=" + hashed_data + (journaled ? " journaled" : " NOT-JOURNALED"));
+        logger.log("found id=" + (journaled ? std::to_string(journalId) : std::string("none")) +
+                   " kind=" + treeminer::to_string(payload.kind) +
+                   " mined_m=" + std::to_string(payload.memory_cost) +
+                   (journaled ? " journaled" : " NOT-JOURNALED"));
 
-        std::cout << std::endl;
+        int observedDifficulty = 0;
+        {
+            std::lock_guard<std::mutex> lock(mtx);
+            observedDifficulty = globalDifficulty;
+        }
+        std::ostringstream findMessage;
+        findMessage << "id=";
+        if (journaled) {
+            findMessage << journalId;
+        } else {
+            findMessage << "none";
+        }
+        findMessage << " | kind=" << treeminer::to_string(payload.kind)
+                    << " | mined_m=" << payload.memory_cost
+                    << " | observed_m=" << observedDifficulty
+                    << " | margin="
+                    << (static_cast<std::int64_t>(payload.memory_cost) -
+                        static_cast<std::int64_t>(observedDifficulty))
+                    << " | journaled=" << (journaled ? "yes" : "no");
+
+        std::string findClass;
         if (payload.kind == treeminer::FindKind::XEN11) {
             size_t capitalCount = std::count_if(hashed_pure.begin(), hashed_pure.end(), [](unsigned char c) { return std::isupper(c); });
             if (capitalCount >= 50) {
-                std::cout << GREEN << "Superblock found!" << RESET;
+                findClass = "superblock";
                 globalSuperBlockCount++;
             } else {
-                std::cout << GREEN << "Normalblock found!" << RESET;
+                findClass = "normal";
                 globalNormalBlockCount++;
             }
         } else {
-            std::cout << YELLOW << "Xuni found!" << RESET;
+            findClass = "xuni";
             globalXuniBlockCount++;
         }
-        std::cout << (journaled ? " Journaled (durable); submission queued." : " NOT journaled!") << std::endl;
+        findMessage << " | class=" << findClass;
+        ConsoleLog::event(journaled ? ConsoleLog::Level::Found : ConsoleLog::Level::Error,
+                          treeminer::to_string(payload.kind), findMessage.str());
 
         if (submissionManager) {
             submissionManager->notifyFindAppended();
@@ -498,25 +713,25 @@ int main(int argc, const char *const *argv)
             auto hours = chrono::duration_cast<chrono::hours>(elapsed_time).count();
             auto minutes = chrono::duration_cast<chrono::minutes>(elapsed_time).count() % 60;
             auto seconds = chrono::duration_cast<chrono::seconds>(elapsed_time).count() % 60;
-            stream << "\033[2K\r"
-                   << "Mining: " << globalHashCount << " Hashes [";
+            stream << "\033[2K\r";
+            stream << std::fixed << std::setprecision(2) << totalHashrate / 1000.0f
+                   << " kH/s | " << globalHashCount << " hashes | ";
             if (hours > 0) {
                 stream << hours << ":";
             }
             stream  << std::setw(2) << std::setfill('0') << minutes << ":";
             stream << std::setw(2) << std::setfill('0') << seconds << ", ";
-            stream << gpuCount << " GPUs, ";
+            stream << " | " << gpuCount << " GPU" << (gpuCount == 1 ? "" : "s");
             if(globalSuperBlockCount > 0) {
-                stream << RED  << " super:" << globalSuperBlockCount<< RESET << ", " ;
+                stream << " | " << RED << "super " << globalSuperBlockCount << RESET;
             }
             if(globalNormalBlockCount > 0) {
-                stream << GREEN << "normal:"  << globalNormalBlockCount << RESET << ", " ;
+                stream << " | " << GREEN << "blocks " << globalNormalBlockCount << RESET;
             }
             if(globalXuniBlockCount > 0) {
-                stream << YELLOW << "xuni:"  << globalXuniBlockCount << RESET << ", " ;
+                stream << " | " << YELLOW << "xuni " << globalXuniBlockCount << RESET;
             }
-            stream << std::fixed << std::setprecision(2) << totalHashrate << " Hashes/s, "
-                   << "Difficulty=" << difficulty << "]";
+            stream << " | diff " << difficulty;
             std::string logMessage = stream.str();
             Logger::logToConsole(logMessage);
         }
@@ -572,7 +787,7 @@ int main(int argc, const char *const *argv)
         }
     }
 
-    setupRoutes();
+    setupRoutes(findJournal.get(), submissionManager.get());
     std::thread serverThread(startServer);
     serverThread.detach();
     if(!donotupload){

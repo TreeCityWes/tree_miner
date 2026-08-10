@@ -25,6 +25,16 @@ public:
     virtual std::vector<FindRecord> fetchEligible(const std::string& now_utc,
                                                   std::size_t limit) = 0;
 
+    // As fetchEligible, restricted to one kind. Exists because a single mixed LIMIT slice
+    // lets one kind starve the other: XUNI mined outside a window is Pending but not
+    // submittable, so a slice full of it returns nothing selectable while XEN11 waits behind
+    // it — and symmetrically, a deep XEN11 backlog can hide a time-critical XUNI. The
+    // scheduler asks per kind so its priority rules operate on what actually exists rather
+    // than on whatever the first `limit` rows happened to be.
+    virtual std::vector<FindRecord> fetchEligibleOfKind(FindKind kind,
+                                                        const std::string& now_utc,
+                                                        std::size_t limit) = 0;
+
     // Oldest-first AcceptedUnconfirmed rows whose next_attempt_at is null or <= now_utc, so
     // /get_block confirmation can be retried after a transient lookup failure (contract v1.1;
     // closes the re-drive gap where such rows were unreachable through the interface).
@@ -63,7 +73,8 @@ public:
 
     // Counters for the stats endpoint.
     struct Counts {
-        std::size_t pending = 0, parked = 0, quarantined = 0, acked_total = 0, dead_total = 0,
+        std::size_t pending = 0, parked = 0, parked_difficulty = 0, parked_xuni = 0,
+                    quarantined = 0, acked_total = 0, dead_total = 0,
                     accepted_unconfirmed = 0, permanently_invalid = 0;  // v1.1
     };
     virtual Counts counts() = 0;

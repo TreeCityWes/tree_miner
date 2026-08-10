@@ -32,6 +32,7 @@
 #include <thread>
 
 #include "../treeminer/IFindJournal.h"
+#include "../treeminer/MarginPolicy.h"
 #include "../treeminer/Types.h"
 #include "CircuitBreaker.h"
 #include "DrainScheduler.h"
@@ -51,6 +52,14 @@ public:
         std::int64_t idle_poll_ms = 250;        // thread wakeup granularity
         CircuitBreaker::Config breaker;
         DrainScheduler::Config drain;
+
+        // Difficulty headroom baked into newly mined hashes (PLAN §5, §10.7). Default Off:
+        // the miner behaves exactly as it did before margins existed until an operator asks
+        // for insurance. See src/treeminer/MarginPolicy.h.
+        MarginConfig margin;
+        // How often the auto ramp is re-evaluated. Auto mode reads journal counts, so this is
+        // deliberately coarse — the ramp moves on a 300 s scale, not a 250 ms one.
+        std::int64_t margin_eval_interval_ms = 5000;
     };
 
     enum class StepResult {
@@ -91,6 +100,15 @@ public:
     DifficultyTrend difficultyTrend() const { return trend_; }
     std::optional<std::uint32_t> lastObservedDifficulty() const;
 
+    // --- difficulty margin (PLAN §5, §10.7) ---
+    // Fired whenever the headroom the miner should bake into new hashes changes. The mine
+    // loop restarts its batch on a change, so this is intentionally low-frequency.
+    void setMarginCallback(std::function<void(std::uint32_t)> cb);
+    // Headroom in KiB currently in effect. Safe to read from any thread.
+    std::uint32_t marginInEffect() const { return margin_kib_.load(); }
+    // Milliseconds the /verify path has been OPEN, or 0 when it is not. Any thread.
+    std::int64_t outageDurationMs() const;
+
     // --- server clock (PLAN §10.5; SOL §7) ---
     // Offset = server wall clock - local wall clock, from HTTP Date headers. Unknown
     // until the first dated response.
@@ -98,6 +116,7 @@ public:
 
     struct Metrics {
         std::uint64_t submitted = 0;
+        std::uint64_t resubmitted = 0;          // /verify attempts for records tried before
         std::uint64_t acked = 0;
         std::uint64_t accepted_unconfirmed = 0;
         std::uint64_t reconciled_via_get_block = 0;
@@ -109,6 +128,7 @@ public:
         std::uint64_t permanently_invalid = 0;
         std::uint64_t transport_failures = 0;
         std::uint64_t probes = 0;
+        std::uint64_t margin_changes = 0;       // headroom ramp steps taken (PLAN §10.7)
     };
     Metrics metrics() const;
     CircuitBreaker::State breakerState() const { return breaker_.state(); }
@@ -129,6 +149,9 @@ private:
     StepResult probeStep_();
     StepResult submitStep_();
     StepResult confirmStep_();
+    // Tracks the outage clock and re-evaluates the headroom ramp. Called at the top of every
+    // step; does real work at most once per margin_eval_interval_ms.
+    void updateMargin_();
 
     IFindJournal& journal_;
     ITransport& transport_;
@@ -144,6 +167,13 @@ private:
     std::optional<std::int64_t> server_offset_ms_;
     std::int64_t next_submit_allowed_ms_ = 0;
     bool last_window_open_ = false;
+
+    // Margin state. margin_kib_ is atomic because the mine loop reads it on every batch.
+    std::atomic<std::uint32_t> margin_kib_{0};
+    std::function<void(std::uint32_t)> margin_cb_;   // guarded by state_mutex_
+    std::atomic<std::int64_t> outage_started_ms_{0}; // 0 = /verify path is not open
+    std::int64_t last_margin_eval_ms_ = 0;
+    bool margin_eval_started_ = false;
 
     Metrics metrics_{};
     mutable std::mutex state_mutex_;  // guards callback/offset/metrics vs reader threads

@@ -53,7 +53,10 @@ int MineUnit::runMineLoop()
 
 		{
 			std::lock_guard<std::mutex> lock(mtx);
-			if (globalDifficulty != difficulty) {
+			// Compare against difficulty + margin, not bare difficulty: a change in either
+			// one means this unit is now mining at the wrong memory cost. Breaking here
+			// returns to runMiningOnDevice, which rebuilds the unit at the new cost.
+			if (effectiveMiningDifficulty() != static_cast<int>(difficulty)) {
 				break;
 			}
 		}

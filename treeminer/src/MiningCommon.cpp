@@ -1,8 +1,26 @@
 #include "MiningCommon.h"
 
+#include <cstdint>
+
 std::atomic<bool> running = true;
 std::atomic<int> globalDifficulty = 1727;
+std::atomic<int> globalDifficultyMargin = 0;
 std::mutex mtx;
+
+int effectiveMiningDifficulty() {
+    const int difficulty = globalDifficulty.load();
+    const int margin = globalDifficultyMargin.load();
+    // Defensive: a negative or overflowing sum would mean mining at a memory cost the server
+    // would reject outright, which is worse than ignoring the margin entirely.
+    if (margin <= 0) {
+        return difficulty;
+    }
+    const long long sum = static_cast<long long>(difficulty) + static_cast<long long>(margin);
+    if (sum > static_cast<long long>(INT32_MAX)) {
+        return difficulty;
+    }
+    return static_cast<int>(sum);
+}
 std::mutex coutmtx;
 
 std::string globalUserAddress = "0x123456789";
@@ -10,6 +28,8 @@ std::string globalDevfeeAddress = "0x24691E54aFafe2416a8252097C9Ca67557271475";
 std::string globalEcoDevfeeAddress = "";
 std::atomic<int> globalDevfeePermillage = 1; // per 1000
 std::string machineId = "00000";
+
+std::function<bool(TreeminerStats&)> globalTreeminerStatsProvider;
 
 std::map<int, std::pair<gpuInfo, std::chrono::steady_clock::time_point>> globalGpuInfos;
 std::mutex globalGpuInfosMutex;

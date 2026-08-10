@@ -49,6 +49,7 @@ set(TREEMINER_JOURNAL_TEST_CASES
     unpark_for_difficulty_boundary
     unpark_xuni_budget_exhaustion
     recover_on_startup_counts
+    fetch_eligible_of_kind
     fetch_awaiting_confirmation
     get_by_id_hit_and_miss
     difficulty_seen_round_trip
@@ -56,4 +57,33 @@ set(TREEMINER_JOURNAL_TEST_CASES
 )
 foreach(case IN LISTS TREEMINER_JOURNAL_TEST_CASES)
     add_test(NAME journal.${case} COMMAND treeminer_journal_tests ${case})
+endforeach()
+
+# ---------------------------------------------------------------------------------------
+# treeminer_fallback_sink_tests — the last-resort JSONL sink that catches finds when
+# FindJournal::append() throws, plus its startup drain back into the journal.
+#
+# A separate executable rather than extra sources on the one above: the two files each
+# carry their own copy of the inline test framework and their own main(), so linking them
+# together would collide. Same Types.cpp rule applies (single defining TU for
+# treeminer::to_string); the import tests use the real FindJournal on a temp database, so
+# this target links sqlite3 directly as well.
+# ---------------------------------------------------------------------------------------
+add_executable(treeminer_fallback_sink_tests
+    FallbackSinkTests.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/treeminer/Types.cpp
+)
+target_link_libraries(treeminer_fallback_sink_tests
+    PRIVATE treeminer_journal unofficial::sqlite3::sqlite3)
+
+set(TREEMINER_FALLBACK_SINK_TEST_CASES
+    append_and_import_round_trip
+    import_is_idempotent_by_key
+    malformed_lines_never_block_recovery
+    missing_file_is_clean_noop
+    append_survives_weird_content
+)
+foreach(case IN LISTS TREEMINER_FALLBACK_SINK_TEST_CASES)
+    add_test(NAME journal.fallback_sink.${case}
+             COMMAND treeminer_fallback_sink_tests ${case})
 endforeach()

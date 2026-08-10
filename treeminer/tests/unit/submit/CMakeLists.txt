@@ -21,7 +21,7 @@ if(NOT TARGET treeminer_submit)
                      ${CMAKE_CURRENT_BINARY_DIR}/treeminer_submit)
 endif()
 
-foreach(suite response_classifier circuit_breaker drain_scheduler submission_manager)
+foreach(suite response_classifier circuit_breaker drain_scheduler submission_manager margin_policy)
     add_executable(test_${suite} test_${suite}.cpp)
     target_link_libraries(test_${suite} PRIVATE treeminer_submit)
     target_include_directories(test_${suite} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})

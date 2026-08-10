@@ -90,7 +90,6 @@ void updateDifficulty()
             if (globalDifficulty != newDifficulty)
             {
                 globalDifficulty = newDifficulty;
-                std::cout << "Updated difficulty to " << globalDifficulty << std::endl;
             }
         }
         if (globalDifficultyObserver)

@@ -81,12 +81,19 @@ std::string getGpuStatsJson() {
     nlohmann::json gpuArray = nlohmann::json::array();
     float totalHashrate = 0.0;
 
-    std::lock_guard<std::mutex> guard(globalGpuInfosMutex);
+    // Copy the tiny per-GPU snapshot under the mining-side mutex, then release it before
+    // JSON formatting and durable-submission statistics. Web polling must never hold this
+    // lock while the batch callback is trying to publish fresh hashrate.
+    decltype(globalGpuInfos) gpuInfos;
+    {
+        std::lock_guard<std::mutex> guard(globalGpuInfosMutex);
+        gpuInfos = globalGpuInfos;
+    }
 
     auto now = std::chrono::system_clock::now();
     auto uptime = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
 
-    for (const auto& gpuInfoPair : globalGpuInfos) {
+    for (const auto& gpuInfoPair : gpuInfos) {
         const auto& gpuInfo = gpuInfoPair.second.first;
         nlohmann::json gpuJson;
         gpuJson["index"] = gpuInfo.index;
@@ -101,6 +108,45 @@ std::string getGpuStatsJson() {
     result["uptime"] = uptime;
     result["acceptedBlocks"] = globalNormalBlockCount.load() + globalSuperBlockCount.load();
     result["rejectedBlocks"] = globalFailedBlockCount.load();
+
+    // --- TreeMiner submission layer (PLAN §11.2) ---
+    // Raw hashrate alone flatters a miner that is losing or parking its finds. Accepted-yield
+    // reports the share of resolved finds that the server actually stored, so the number an
+    // operator reads reflects earned work rather than attempted work.
+    TreeminerStats tm;
+    if (globalTreeminerStatsProvider && globalTreeminerStatsProvider(tm)) {
+        result["difficulty"] = tm.difficulty;
+        result["marginInEffect"] = tm.margin_in_effect;
+        result["effectiveDifficulty"] = tm.effective_difficulty;
+        result["marginMode"] = tm.margin_mode;
+        result["serverState"] = tm.breaker_state;
+        result["outageMs"] = tm.outage_ms;
+        result["drainRatePerSecond"] = tm.drain_rate_per_second;
+
+        nlohmann::json journal;
+        journal["pending"] = tm.pending;
+        journal["parked"] = tm.parked;
+        journal["quarantined"] = tm.quarantined;
+        journal["acked"] = tm.acked_total;
+        journal["dead"] = tm.dead_total;
+        journal["acceptedUnconfirmed"] = tm.accepted_unconfirmed;
+        journal["permanentlyInvalid"] = tm.permanently_invalid;
+        result["journal"] = journal;
+
+        result["rawHashrate"] = totalHashrate;
+        // Resolved = reached a terminal state. In-flight finds are excluded rather than
+        // counted as losses, so the ratio does not dip merely because a drain is in progress.
+        const std::size_t resolved = tm.acked_total + tm.dead_total + tm.permanently_invalid;
+        if (resolved > 0) {
+            const double ratio = static_cast<double>(tm.acked_total) / static_cast<double>(resolved);
+            result["acceptedYieldRatio"] = ratio;
+            result["acceptedYieldHashrate"] = totalHashrate * ratio;
+        } else {
+            // No find has resolved yet: report unknown rather than an implied 0% or 100%.
+            result["acceptedYieldRatio"] = nullptr;
+            result["acceptedYieldHashrate"] = nullptr;
+        }
+    }
 
     return result.dump();
 }
