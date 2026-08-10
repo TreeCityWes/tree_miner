@@ -9,6 +9,8 @@
 
 XenBlocks is a hashpower marketplace and mining monitoring platform for the XEN ecosystem. It combines a real-time mining fleet dashboard with a decentralized marketplace where providers list GPU capacity and renters lease hashpower on-demand. The platform features an embedded MQTT broker for worker telemetry, WebSocket-driven live updates, and JWT-authenticated wallet-based accounts.
 
+Remote mining protocol: [XenBlocks remote server API reference](docs/xenblocks-remote-api.md).
+
 <!-- Screenshots coming soon -->
 
 ## Architecture
