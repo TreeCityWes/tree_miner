@@ -47,6 +47,11 @@ void CudaBackend::init(size_t batchSize, uint32_t type, uint32_t version,
 	runner_->init(batchSize);
 }
 
+void CudaBackend::releaseBuffers()
+{
+	runner_.reset();
+}
+
 void* CudaBackend::getInputMemory(size_t jobId) const
 {
 	return runner_->getInputMemory(jobId);

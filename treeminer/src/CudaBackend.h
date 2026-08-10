@@ -15,6 +15,7 @@ public:
 	void init(size_t batchSize, uint32_t type, uint32_t version,
 	          uint32_t passes, uint32_t lanes,
 	          uint32_t segmentBlocks) override;
+	void releaseBuffers() override;
 	void* getInputMemory(size_t jobId) const override;
 	const void* getOutputMemory(size_t jobId) const override;
 	bool prepareInputBlocksOnDevice(const std::vector<std::string>& passwords,

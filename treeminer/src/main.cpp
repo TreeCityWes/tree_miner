@@ -124,10 +124,17 @@ static void runMiningOnDevice(ComputeBackend& backend,
     while (running)
     {
         MineUnit unit(backend, globalDifficulty, submitCallback, statCallback);
-        if (unit.runMineLoop() < 0)
+        int rc = unit.runMineLoop();
+        if (rc < 0)
         {
             std::cerr << "Mining loop failed on device #" << backend.getDeviceInfo().index << std::endl;
             break;
+        }
+        if (rc > 0)
+        {
+            // Recoverable (e.g. batch allocation failed); upstream retried instantly,
+            // spinning the CPU and flooding the log. Back off before the next attempt.
+            std::this_thread::sleep_for(std::chrono::seconds(5));
         }
     }
 }

@@ -29,6 +29,10 @@ public:
 	                  uint32_t passes, uint32_t lanes,
 	                  uint32_t segmentBlocks) = 0;
 
+	// Release all batch buffers now. Needed when difficulty changes: the retained pool
+	// (sized for the old difficulty) otherwise starves the free-memory batch estimate.
+	virtual void releaseBuffers() {}
+
 	virtual void* getInputMemory(size_t jobId) const = 0;
 	virtual const void* getOutputMemory(size_t jobId) const = 0;
 

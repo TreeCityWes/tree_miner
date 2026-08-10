@@ -25,10 +25,20 @@ int MineUnit::runMineLoop()
 	busId = devInfo.busId;
 	size_t totalMemory = devInfo.totalMemoryBytes;
 	size_t freeMemory = backend_.getFreeMemory();
-	const auto batchDecision = hashapi::selectCudaBatchSize(
+	auto batchDecision = hashapi::selectCudaBatchSize(
 		freeMemory,
 		static_cast<std::uint32_t>(difficulty),
 		globalMaxBatchSize);
+	if (batchDecision.selected_batch_size == 0) {
+		// The backend may still hold the pool sized for the previous difficulty,
+		// which starves the free-memory estimate. Release it and re-measure.
+		backend_.releaseBuffers();
+		freeMemory = backend_.getFreeMemory();
+		batchDecision = hashapi::selectCudaBatchSize(
+			freeMemory,
+			static_cast<std::uint32_t>(difficulty),
+			globalMaxBatchSize);
+	}
 	if(batchDecision.selected_batch_size == 0) {
 		std::cout << "Not enough memory" << std::endl;
 		return 1;
