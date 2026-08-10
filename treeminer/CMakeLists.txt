@@ -6,6 +6,14 @@ option(XENBLOCKS_BUILD_HASHAPI_CLI "Build the standalone Hash API CLI" OFF)
 option(XENBLOCKS_HASHAPI_STUB_BACKEND "Build hashapi-cli with a deterministic stub backend for CLI smoke tests" OFF)
 option(XENBLOCKS_BUILD_HASH_DIAGNOSTICS "Build small hash diagnostic self-test tools" ON)
 
+# Remember whether the caller selected an architecture. CMake may initialize
+# CMAKE_CUDA_ARCHITECTURES while enabling CUDA, so this must be captured first.
+if(DEFINED CMAKE_CUDA_ARCHITECTURES)
+    set(XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT ON)
+else()
+    set(XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT OFF)
+endif()
+
 if(XENBLOCKS_BUILD_MINER)
     project(xenblocksMiner LANGUAGES CUDA CXX VERSION 1.0)
 else()
@@ -22,7 +30,31 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 if(XENBLOCKS_BUILD_MINER)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75 80 86 89 90 CACHE STRING "CUDA architectures")
+
+    # Produce native code for every architecture supported by the selected
+    # toolkit. Users can still request a smaller target set explicitly.
+    if(NOT XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT)
+        if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
+            set(_xenblocks_cuda_architectures 75-real 80-real 86-real 87-real 89-real 90-real 120)
+        elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+            set(_xenblocks_cuda_architectures 50-real 52-real 60-real 61-real 70-real 75-real 80-real 86-real 87-real 89-real 90-real 120)
+        elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
+            set(_xenblocks_cuda_architectures 50-real 52-real 60-real 61-real 70-real 75-real 80-real 86-real 87-real 89-real 90)
+        else()
+            set(_xenblocks_cuda_architectures 50-real 52-real 60-real 61-real 70-real 75-real 80-real 86)
+        endif()
+        set(CMAKE_CUDA_ARCHITECTURES "${_xenblocks_cuda_architectures}" CACHE STRING "CUDA architectures" FORCE)
+    endif()
+
+    foreach(_xenblocks_cuda_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+        if(_xenblocks_cuda_arch MATCHES "^120(-real|-virtual)?$" AND
+           CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
+            message(FATAL_ERROR
+                "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8 or newer; "
+                "detected CUDA ${CMAKE_CUDA_COMPILER_VERSION}.")
+        endif()
+    endforeach()
+    message(STATUS "CUDA ${CMAKE_CUDA_COMPILER_VERSION}; building architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
 if(WIN32)
@@ -112,6 +144,11 @@ if(TREEMINER_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/unit/journal)
     add_subdirectory(tests/unit/submit)
+    # Chaos gates (PLAN §6): needs both the journal and the submit library, so it is only
+    # buildable where the journal target exists.
+    if(TARGET treeminer_journal)
+        add_subdirectory(tests/chaos)
+    endif()
 endif()
 
 set(SOURCE_FILES

@@ -19,7 +19,7 @@
                 "XENBLOCKS_BUILD_MINER": "ON",
                 "CUDAToolkit_ROOT": "$env{CUDA_PATH_V12_8}",
                 "CMAKE_CUDA_COMPILER": "$env{CUDA_PATH_V12_8}/bin/nvcc.exe",
-                "CMAKE_CUDA_ARCHITECTURES": "75;80;86;89;90"
+                "CMAKE_CUDA_ARCHITECTURES": "50-real;52-real;60-real;61-real;70-real;75-real;80-real;86-real;87-real;89-real;90-real;120"
             }
         },
         {
@@ -60,6 +60,16 @@
             "binaryDir": "${sourceDir}/build-cuda-sm90",
             "cacheVariables": {
                 "CMAKE_CUDA_ARCHITECTURES": "90"
+            }
+        },
+        {
+            "name": "cuda-release-vcpkg-sm120",
+            "displayName": "CUDA Release for sm_120",
+            "description": "Release full-miner build for Blackwell-class GeForce RTX 50-series GPUs (CUDA 12.8+).",
+            "inherits": "cuda-release-vcpkg-modern",
+            "binaryDir": "${sourceDir}/build-cuda-sm120",
+            "cacheVariables": {
+                "CMAKE_CUDA_ARCHITECTURES": "120"
             }
         },
         {
@@ -112,6 +122,10 @@
         {
             "name": "cuda-release-vcpkg-sm90",
             "configurePreset": "cuda-release-vcpkg-sm90"
+        },
+        {
+            "name": "cuda-release-vcpkg-sm120",
+            "configurePreset": "cuda-release-vcpkg-sm120"
         },
         {
             "name": "hashapi-cli-mingw",

@@ -97,8 +97,9 @@ def test_cuda_release_benchmark_presets_exist():
         "cuda-release-vcpkg-sm86",
         "cuda-release-vcpkg-sm89",
         "cuda-release-vcpkg-sm90",
+        "cuda-release-vcpkg-sm120",
         '"CMAKE_BUILD_TYPE": "Release"',
-        '"CMAKE_CUDA_ARCHITECTURES": "75;80;86;89;90"',
+        '"CMAKE_CUDA_ARCHITECTURES": "50-real;52-real;60-real;61-real;70-real;75-real;80-real;86-real;87-real;89-real;90-real;120"',
     ]:
         assert token in content
 
@@ -106,10 +107,17 @@ def test_cuda_release_benchmark_presets_exist():
         "repeatable Hash API/CUDA benchmark runs",
         "cuda-release-vcpkg-modern",
         "cuda-release-vcpkg-sm86",
+        "RTX 40 series",
+        "RTX 50 series",
+        "CUDA Toolkit 12.8",
         "Do not compare benchmark results from a Debug build",
         "CMAKE_CUDA_ARCHITECTURES",
     ]:
         assert token in docs
+
+    cmake = read("CMakeLists.txt")
+    assert "VERSION_GREATER_EQUAL 12.8" in cmake
+    assert "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8" in cmake
 
 
 def test_hash_api_json_uses_standard_library_only():
@@ -423,7 +431,10 @@ def test_random_key_generator_avoids_per_key_stream_allocation():
     assert "std::stringstream" not in content
     assert "key.reserve(total_length)" in content
     assert "std::uniform_int_distribution" not in content
-    assert "std::uint32_t random_bits = generator()" in content
+    # TreeMiner keygen hardening (CHANGES-FROM-UPSTREAM): mt19937_64 seeded from 256 bits
+    # of OS entropy, drawing 64 bits (16 hex nibbles) per generator call.
+    assert "std::uint64_t random_bits = generator()" in content
+    assert "std::mt19937_64 generator" in content
 
 
 def test_hash_api_matching_avoids_regex_in_hot_path():

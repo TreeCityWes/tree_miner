@@ -30,11 +30,25 @@ cmake --preset cuda-release-vcpkg-modern
 cmake --build --preset cuda-release-vcpkg-modern
 ```
 
-The `cuda-release-vcpkg-modern` preset builds for a public modern CUDA architecture set: `75;80;86;89;90`. If you want to build only for one CUDA architecture, use the matching preset when available:
+The `cuda-release-vcpkg-modern` preset uses CUDA Toolkit 12.8 and builds a fat binary with native code for `50;52;60;61;70;75;80;86;87;89;90;120`. This covers supported NVIDIA generations from Maxwell through Blackwell, including RTX 20 (`sm_75`), RTX 30 (`sm_86`), RTX 40 series (`sm_89`), and RTX 50 series (`sm_120`). Older targets use CMake's `-real` form so they carry native SASS only; the final `120` target also carries PTX for forward compatibility. A fat binary is larger and takes longer to compile, but each listed GPU runs native code at full mining performance.
+
+RTX 50 series support requires CUDA Toolkit 12.8 or newer. Older toolkits cannot generate `sm_120` code. The NVIDIA display driver must also be new enough for the installed toolkit.
+
+If you want a smaller binary and faster compilation for one CUDA architecture, use the matching preset:
 
 ```bash
 cmake --preset cuda-release-vcpkg-sm86
 cmake --build --preset cuda-release-vcpkg-sm86
+```
+
+For RTX 40 or RTX 50 series respectively:
+
+```bash
+cmake --preset cuda-release-vcpkg-sm89
+cmake --build --preset cuda-release-vcpkg-sm89
+
+cmake --preset cuda-release-vcpkg-sm120
+cmake --build --preset cuda-release-vcpkg-sm120
 ```
 
 Or override the architecture explicitly:
