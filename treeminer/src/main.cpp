@@ -384,7 +384,15 @@ int main(int argc, const char *const *argv)
     }
 
     if (!isTestFixedDiff) {
-        globalDifficulty = 42069;
+        // Seed from the local cache so a restart during a server outage mines at the
+        // last known real difficulty instead of the 42069 fallback (~50x wasted work).
+        int cachedDifficulty = loadCachedDifficulty();
+        if (cachedDifficulty > 0) {
+            globalDifficulty = cachedDifficulty;
+            std::cout << "Seeded difficulty from local cache: " << cachedDifficulty << std::endl;
+        } else {
+            globalDifficulty = 42069;
+        }
         updateDifficulty();
         std::thread difficultyThread(updateDifficultyPeriodically);
         difficultyThread.detach();

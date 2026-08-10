@@ -1,5 +1,7 @@
 #include "DifficultyManager.h"
 
+#include <cstdio>
+#include <fstream>
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -9,6 +11,47 @@
 #include "MiningCommon.h"
 
 std::function<void(std::uint32_t)> globalDifficultyObserver;
+
+namespace {
+
+constexpr const char* kDifficultyCacheFile = "difficulty.cache";
+
+void persistDifficulty(int difficulty)
+{
+    // Best-effort: write-then-rename so a torn write can't leave a garbage value.
+    const std::string tmp = std::string(kDifficultyCacheFile) + ".tmp";
+    std::ofstream out(tmp, std::ios::trunc);
+    if (!out)
+    {
+        return;
+    }
+    out << difficulty << '\n';
+    out.close();
+    if (out.fail())
+    {
+        std::remove(tmp.c_str());
+        return;
+    }
+    std::remove(kDifficultyCacheFile);
+    std::rename(tmp.c_str(), kDifficultyCacheFile);
+}
+
+} // namespace
+
+int loadCachedDifficulty()
+{
+    std::ifstream in(kDifficultyCacheFile);
+    int value = 0;
+    if (!(in >> value))
+    {
+        return 0;
+    }
+    if (value < 1 || value > 100000000)
+    {
+        return 0;
+    }
+    return value;
+}
 
 std::string getDifficulty()
 {
@@ -54,6 +97,7 @@ void updateDifficulty()
         {
             globalDifficultyObserver(static_cast<std::uint32_t>(newDifficulty));
         }
+        persistDifficulty(newDifficulty);
     }
     catch (const std::exception &e)
     {

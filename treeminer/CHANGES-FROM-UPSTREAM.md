@@ -31,4 +31,14 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   legacy salt value.
 - **Collision-safe keygen** (`RandomHexKeyGenerator.h`): `mt19937_64` seeded from 256 bits of
   OS entropy + clock + per-instance counter, replacing the single-32-bit-seed `mt19937`.
+- **VRAM-pool release on difficulty change** (`ComputeBackend.h`, `CudaBackend.*`,
+  `MineUnit.cpp`, `main.cpp`): on a difficulty drop the retained kernel pool starved the
+  free-memory estimate, producing a `batch=0` → "Not enough memory" hot spin (observed live:
+  46M log lines, mining idle). The backend now releases its buffers and re-measures before
+  giving up, and `runMineLoop`'s non-fatal exit backs off 5 s instead of spinning.
+- **Persistent difficulty cache** (`DifficultyManager.*`, `main.cpp`): every successful
+  difficulty sample is written to `difficulty.cache` (write-then-rename) and seeds
+  `globalDifficulty` at startup. Upstream boots at the hardcoded 42069 fallback until the
+  server answers — during a server outage that meant mining indefinitely at ~50x the real
+  difficulty (observed live: 1.9 kH/s effective vs 92 kH/s at the true difficulty of 1100).
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.
