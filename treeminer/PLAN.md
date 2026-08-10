@@ -1,7 +1,8 @@
 # TreeMiner — Comprehensive Build Plan (v2)
 
 **Status: IMPLEMENTATION AUTHORITY — build phase active.** v2 incorporates the adopted amendments
-from the three reviews (KIMMY-PLAN.md, GROK-RECOMMENDATIONS.md, SOL-PLAN.md), all verified against
+from the three reviews (KIMMY-PLAN.md, GROK-RECOMMENDATIONS.md, SOL-PLAN.md — preserved in
+`docs/reviews/`, synthesized in `docs/07-external-reviews.md`), all verified against
 code. **§10 below supersedes conflicting v1 text.**
 
 TreeMiner is a new XenBlocks miner derived from the three studied projects, whose defining

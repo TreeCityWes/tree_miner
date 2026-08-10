@@ -23,9 +23,14 @@ We should be able to store the hashes and timestamps locally then resubmit when 
   - `repos/xgpu` — JozefJarosciak/xgpu (Jozef Miner, cloud deployment scripts)
 - `docs/` — our research documentation, numbered by source:
   - `01-xenminer-reference.md`, `02-xenblocksminer-woody.md`, `03-xgpu-jozef.md`,
-    `04-official-docs-ecosystem.md`, `05-synthesis-new-miner-design.md`
-- `research/` — scratch notes and experiments
-- New miner source will live in `src/` once design is settled.
+    `04-official-docs-ecosystem.md`, `05-synthesis-new-miner-design.md`,
+    `06-optimization-plan.md`, `07-external-reviews.md`
+  - `docs/reviews/` — verbatim review docs from other models (Kimmy, Grok, Sol)
+- `research/` — scratch notes, experiments, validation records
+- `treeminer/` — the miner itself (fork of XenblocksMiner). `treeminer/PLAN.md` is the
+  design authority; `treeminer/CHANGES-FROM-UPSTREAM.md` is the divergence log.
+  TreeMiner components: `src/treeminer/` (shared contract), `src/journal/`,
+  `src/submit/`, tests in `tests/`.
 
 ## Key design goal
 
