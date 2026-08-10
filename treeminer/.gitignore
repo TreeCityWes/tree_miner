@@ -1,7 +1,10 @@
 **/build/
 build-*/
 **/vcpkg_installed/
-log*
+# Anchored: the miner's runtime log files live at the working-directory root.
+# An unanchored "log*" matches src/Logger.cpp on case-insensitive filesystems
+# (WSL/NTFS, macOS) — that is how Logger.{h,cpp} were dropped from this fork.
+/log*
 __pycache__/
 *.pyc
 data/
