@@ -169,6 +169,14 @@ public:
     Counts counts() override {
         Counts c;
         for (const auto& r : records_) {
+            if (r.status == FindStatus::Pending ||
+                r.status == FindStatus::AcceptedUnconfirmed) {
+                if (r.payload.kind == FindKind::XEN11) {
+                    ++c.queued_xen11;
+                } else {
+                    ++c.queued_xuni;
+                }
+            }
             switch (r.status) {
                 case FindStatus::Pending: ++c.pending; break;
                 case FindStatus::ParkedDifficulty:

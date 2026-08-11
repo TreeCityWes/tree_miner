@@ -425,7 +425,7 @@ TEST_CASE(recover_on_startup_counts) {
         FindJournal journal(tmp.path);
         // Two Pending.
         journal.append(makePayload("51"));
-        journal.append(makePayload("52"));
+        journal.append(makePayload("52", FindKind::XUNI));
         // One of each non-pending state, driven through the public API.
         const auto put = [&](const std::string& suffix, FindStatus status) {
             const std::int64_t id = journal.append(makePayload(suffix));
@@ -478,6 +478,8 @@ TEST_CASE(recover_on_startup_counts) {
     CHECK_EQ(counts.dead_total, 1u);
     CHECK_EQ(counts.accepted_unconfirmed, 1u);
     CHECK_EQ(counts.permanently_invalid, 1u);
+    CHECK_EQ(counts.queued_xen11, 2u);  // one Pending + one AcceptedUnconfirmed
+    CHECK_EQ(counts.queued_xuni, 1u);
 }
 
 TEST_CASE(fetch_awaiting_confirmation) {
@@ -611,6 +613,8 @@ TEST_CASE(reopen_persistence) {
     const IFindJournal::Counts counts = reopened.counts();
     CHECK_EQ(counts.pending, 1u);
     CHECK_EQ(counts.acked_total, 1u);
+    CHECK_EQ(counts.queued_xen11, 1u);
+    CHECK_EQ(counts.queued_xuni, 0u);
 
     const auto difficulty = reopened.lastKnownDifficulty();
     CHECK(difficulty.has_value());

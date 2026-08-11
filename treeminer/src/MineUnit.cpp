@@ -24,21 +24,14 @@ int MineUnit::runMineLoop()
 	gpuName = devInfo.name;
 	busId = devInfo.busId;
 	size_t totalMemory = devInfo.totalMemoryBytes;
+	// A prior difficulty's pool can consume nearly all VRAM. Release it before sizing
+	// the next pool, or a difficulty increase can select a tiny batch from the scraps.
+	backend_.releaseBuffers();
 	size_t freeMemory = backend_.getFreeMemory();
 	auto batchDecision = hashapi::selectCudaBatchSize(
 		freeMemory,
 		static_cast<std::uint32_t>(difficulty),
 		globalMaxBatchSize);
-	if (batchDecision.selected_batch_size == 0) {
-		// The backend may still hold the pool sized for the previous difficulty,
-		// which starves the free-memory estimate. Release it and re-measure.
-		backend_.releaseBuffers();
-		freeMemory = backend_.getFreeMemory();
-		batchDecision = hashapi::selectCudaBatchSize(
-			freeMemory,
-			static_cast<std::uint32_t>(difficulty),
-			globalMaxBatchSize);
-	}
 	if(batchDecision.selected_batch_size == 0) {
 		std::cout << "Not enough memory" << std::endl;
 		return 1;

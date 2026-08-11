@@ -61,7 +61,8 @@ enum class LastSubmissionState {
     Failed,
 };
 
-std::atomic<std::size_t> globalQueuedSubmissions{0};
+std::atomic<std::size_t> globalQueuedXnm{0};
+std::atomic<std::size_t> globalQueuedXuni{0};
 std::atomic<LastSubmissionState> globalLastSubmission{LastSubmissionState::None};
 std::atomic<treeminer::CircuitBreaker::State> globalNetworkState{
     treeminer::CircuitBreaker::State::Closed};
@@ -396,7 +397,9 @@ int main(int argc, const char *const *argv)
     }
     {
         auto rec = findJournal->recoverOnStartup();
-        globalQueuedSubmissions = rec.pending + rec.accepted_unconfirmed;
+        const auto counts = findJournal->counts();
+        globalQueuedXnm = counts.queued_xen11;
+        globalQueuedXuni = counts.queued_xuni;
         std::cout << "Journal recovered: " << rec.pending << " pending, "
                   << rec.accepted_unconfirmed << " awaiting confirmation, "
                   << (rec.parked_difficulty + rec.parked_xuni) << " parked, "
@@ -442,7 +445,8 @@ int main(int argc, const char *const *argv)
                 }
                 try {
                     const auto counts = findJournal->counts();
-                    globalQueuedSubmissions = counts.pending + counts.accepted_unconfirmed;
+                    globalQueuedXnm = counts.queued_xen11;
+                    globalQueuedXuni = counts.queued_xuni;
                 } catch (const treeminer::JournalError&) {
                     // Outcome persistence succeeded; retain the last display count.
                 }
@@ -538,7 +542,8 @@ int main(int argc, const char *const *argv)
         if (journaled) {
             try {
                 const auto counts = findJournal->counts();
-                globalQueuedSubmissions = counts.pending + counts.accepted_unconfirmed;
+                globalQueuedXnm = counts.queued_xen11;
+                globalQueuedXuni = counts.queued_xuni;
             } catch (const treeminer::JournalError&) {
                 // The durable append succeeded; the next outcome refreshes the display count.
             }
@@ -620,7 +625,8 @@ int main(int argc, const char *const *argv)
             if(globalXuniBlockCount > 0) {
                 stream << YELLOW << "xuni:"  << globalXuniBlockCount << RESET << ", " ;
             }
-            stream << "Q:" << globalQueuedSubmissions
+            stream << "Q_XNM:" << globalQueuedXnm
+                   << " Q_XUNI:" << globalQueuedXuni
                    << " net:" << networkStateLabel(globalNetworkState)
                    << " last:" << submissionStateLabel(globalLastSubmission) << ", ";
             stream << std::fixed << std::setprecision(2) << totalHashrate / 1000.0f
