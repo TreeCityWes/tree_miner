@@ -213,6 +213,40 @@ void SubmissionManager::setDifficultyHintCallback(std::function<void(std::uint32
     difficulty_hint_cb_ = std::move(cb);
 }
 
+void SubmissionManager::setOutcomeCallback(OutcomeCallback cb) {
+    std::lock_guard<std::mutex> lk(state_mutex_);
+    outcome_cb_ = std::move(cb);
+}
+
+void SubmissionManager::setNetworkStateCallback(NetworkStateCallback cb) {
+    std::lock_guard<std::mutex> lk(state_mutex_);
+    network_state_cb_ = std::move(cb);
+}
+
+void SubmissionManager::emitOutcome_(const FindRecord& record,
+                                     const Classification& classification,
+                                     std::optional<int> http_status) {
+    OutcomeCallback callback;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        callback = outcome_cb_;
+    }
+    if (callback) {
+        callback(record, classification, http_status);
+    }
+}
+
+void SubmissionManager::emitNetworkState_() {
+    NetworkStateCallback callback;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        callback = network_state_cb_;
+    }
+    if (callback) {
+        callback(breaker_.state());
+    }
+}
+
 void SubmissionManager::observeDifficulty(std::uint32_t difficulty) {
     bool decreased = false;
     {
@@ -328,6 +362,7 @@ SubmissionManager::StepResult SubmissionManager::probeStep_() {
     } else {
         breaker_.onProbeFailure();
     }
+    emitNetworkState_();
     return StepResult::Probed;
 }
 
@@ -350,7 +385,11 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     }
     last_window_open_ = window.open;
 
-    std::vector<FindRecord> eligible = journal_.fetchEligible(isoUtc(wall_()), cfg_.fetch_limit);
+    // Scan the active queue, not only its oldest prefix. Otherwise enough closed-window
+    // XUNI rows can hide a later XEN11 row and block it until the next XUNI window.
+    const auto queue_counts = journal_.counts();
+    const std::size_t scan_limit = std::max(cfg_.fetch_limit, queue_counts.pending);
+    std::vector<FindRecord> eligible = journal_.fetchEligible(isoUtc(wall_()), scan_limit);
     bool xuni_pressure = false;
     for (const FindRecord& r : eligible) {
         if (r.payload.kind == FindKind::XUNI) {
@@ -429,9 +468,10 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         next_attempt = backoffTimeIso_(rec->attempt_count, retry_after_s);
     }
 
-    journal_.recordAttempt(rec->id, c,
-                           res.transport_ok ? std::optional<int>(res.http_status) : std::nullopt,
-                           res.body, next_attempt, isoUtc(wall_()));
+    const std::optional<int> http_status =
+        res.transport_ok ? std::optional<int>(res.http_status) : std::nullopt;
+    journal_.recordAttempt(rec->id, c, http_status, res.body, next_attempt, isoUtc(wall_()));
+    emitOutcome_(*rec, c, http_status);
 
     // Breaker + adaptive pacing.
     const bool transport_failure = !res.transport_ok || res.http_status >= 500 ||
@@ -458,6 +498,7 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         breaker_.onVerifyInconclusive();
         scheduler_.onHealthyRoundTrip();
     }
+    emitNetworkState_();
 
     next_submit_allowed_ms_ = now_mono + scheduler_.submitIntervalMs();
 
@@ -519,10 +560,10 @@ SubmissionManager::StepResult SubmissionManager::confirmStep_() {
             next_attempt = backoffTimeIso_(rec.attempt_count, std::nullopt);
         }
 
-        journal_.recordAttempt(rec.id, c,
-                               conf.transport_ok ? std::optional<int>(conf.http_status)
-                                                 : std::nullopt,
-                               conf.body, next_attempt, isoUtc(wall_()));
+        const std::optional<int> http_status =
+            conf.transport_ok ? std::optional<int>(conf.http_status) : std::nullopt;
+        journal_.recordAttempt(rec.id, c, http_status, conf.body, next_attempt, isoUtc(wall_()));
+        emitOutcome_(rec, c, http_status);
         {
             std::lock_guard<std::mutex> lk(state_mutex_);
             ++metrics_.confirmation_retries;

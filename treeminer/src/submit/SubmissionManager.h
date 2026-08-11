@@ -63,6 +63,9 @@ public:
 
     using MonotonicClock = std::function<std::int64_t()>;  // ms
     using WallClock = std::function<std::int64_t()>;       // epoch ms, UTC
+    using OutcomeCallback = std::function<void(
+        const FindRecord&, const Classification&, std::optional<int>)>;
+    using NetworkStateCallback = std::function<void(CircuitBreaker::State)>;
 
     // Default clocks (std::chrono) are used when null. Split constructors instead of
     // `Config cfg = Config{}`: GCC rejects that default argument inside the enclosing class.
@@ -86,6 +89,9 @@ public:
     // Fired for every fresh difficulty observation (poller-independent hints from 401
     // bodies and OPEN-state probes) so the engine's cache updates immediately.
     void setDifficultyHintCallback(std::function<void(std::uint32_t)> cb);
+    // Fired after an outcome has been durably recorded in the journal.
+    void setOutcomeCallback(OutcomeCallback cb);
+    void setNetworkStateCallback(NetworkStateCallback cb);
     // Called by the DifficultyService poller too, so trend tracking sees every sample.
     void observeDifficulty(std::uint32_t difficulty);
     DifficultyTrend difficultyTrend() const { return trend_; }
@@ -124,6 +130,9 @@ private:
     void threadLoop_();
     void trackServerDate_(const TransportResult& r);
     void handleDifficultyBody_(const std::string& body);
+    void emitOutcome_(const FindRecord& record, const Classification& classification,
+                      std::optional<int> http_status);
+    void emitNetworkState_();
     std::string backoffTimeIso_(std::int32_t attempt_count,
                                 std::optional<long> retry_after_s) const;
     StepResult probeStep_();
@@ -139,6 +148,8 @@ private:
     DrainScheduler scheduler_;
 
     std::function<void(std::uint32_t)> difficulty_hint_cb_;
+    OutcomeCallback outcome_cb_;
+    NetworkStateCallback network_state_cb_;
     std::optional<std::uint32_t> last_difficulty_;
     DifficultyTrend trend_ = DifficultyTrend::Unknown;
     std::optional<std::int64_t> server_offset_ms_;

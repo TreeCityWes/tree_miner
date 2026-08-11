@@ -52,6 +52,39 @@ std::string globalWorkerId = "";
 std::unique_ptr<PlatformManager> globalPlatformManager;
 std::string globalTestBlockPattern = "";
 
+enum class LastSubmissionState {
+    None,
+    Accepted,
+    Unconfirmed,
+    Retry,
+    Parked,
+    Failed,
+};
+
+std::atomic<std::size_t> globalQueuedSubmissions{0};
+std::atomic<LastSubmissionState> globalLastSubmission{LastSubmissionState::None};
+std::atomic<treeminer::CircuitBreaker::State> globalNetworkState{
+    treeminer::CircuitBreaker::State::Closed};
+
+const char* submissionStateLabel(LastSubmissionState state) {
+    switch (state) {
+        case LastSubmissionState::Accepted: return "OK";
+        case LastSubmissionState::Unconfirmed: return "wait";
+        case LastSubmissionState::Retry: return "retry";
+        case LastSubmissionState::Parked: return "parked";
+        case LastSubmissionState::Failed: return "failed";
+        default: return "-";
+    }
+}
+
+const char* networkStateLabel(treeminer::CircuitBreaker::State state) {
+    switch (state) {
+        case treeminer::CircuitBreaker::State::Open: return "down";
+        case treeminer::CircuitBreaker::State::HalfOpen: return "probe";
+        default: return "up";
+    }
+}
+
 #ifdef _WIN32
 BOOL ctrlHandler(DWORD fdwCtrlType) {
     switch (fdwCtrlType) {
@@ -351,6 +384,7 @@ int main(int argc, const char *const *argv)
     // --- TreeMiner journal-first pipeline (replaces the upstream in-RAM closure queue) ---
     // Every find is durably journaled before any network attempt; the SubmissionManager
     // drains the journal with outage-aware retry, parking, and /get_block confirmation.
+    Logger logger("log", 1024 * 1024);
     std::unique_ptr<treeminer::FindJournal> findJournal;
     std::unique_ptr<treeminer::HttpTransport> findTransport;
     std::unique_ptr<treeminer::SubmissionManager> submissionManager;
@@ -362,6 +396,7 @@ int main(int argc, const char *const *argv)
     }
     {
         auto rec = findJournal->recoverOnStartup();
+        globalQueuedSubmissions = rec.pending + rec.accepted_unconfirmed;
         std::cout << "Journal recovered: " << rec.pending << " pending, "
                   << rec.accepted_unconfirmed << " awaiting confirmation, "
                   << (rec.parked_difficulty + rec.parked_xuni) << " parked, "
@@ -370,6 +405,68 @@ int main(int argc, const char *const *argv)
     if (!isTestFixedDiff) {
         findTransport = std::make_unique<treeminer::HttpTransport>(globalRpcLink, machineId);
         submissionManager = std::make_unique<treeminer::SubmissionManager>(*findJournal, *findTransport);
+        submissionManager->setOutcomeCallback(
+            [&logger, &findJournal](const treeminer::FindRecord& record,
+                      const treeminer::Classification& classification,
+                      std::optional<int> httpStatus) {
+                const char* outcome = "UPDATED";
+                std::string detail = classification.reason;
+                switch (classification.next_status) {
+                    case treeminer::FindStatus::Acked:
+                        outcome = "ACCEPTED";
+                        detail = "confirmed via /get_block";
+                        globalLastSubmission = LastSubmissionState::Accepted;
+                        break;
+                    case treeminer::FindStatus::AcceptedUnconfirmed:
+                        outcome = "UNCONFIRMED";
+                        detail = "confirmation retry scheduled";
+                        globalLastSubmission = LastSubmissionState::Unconfirmed;
+                        break;
+                    case treeminer::FindStatus::Pending:
+                        outcome = "RETRY";
+                        globalLastSubmission = LastSubmissionState::Retry;
+                        break;
+                    case treeminer::FindStatus::ParkedDifficulty:
+                    case treeminer::FindStatus::ParkedXuniWindow:
+                        outcome = "PARKED";
+                        globalLastSubmission = LastSubmissionState::Parked;
+                        break;
+                    case treeminer::FindStatus::Quarantined:
+                    case treeminer::FindStatus::Dead:
+                    case treeminer::FindStatus::PermanentlyInvalid:
+                        outcome = "REJECTED";
+                        globalLastSubmission = LastSubmissionState::Failed;
+                        break;
+                    default:
+                        break;
+                }
+                try {
+                    const auto counts = findJournal->counts();
+                    globalQueuedSubmissions = counts.pending + counts.accepted_unconfirmed;
+                } catch (const treeminer::JournalError&) {
+                    // Outcome persistence succeeded; retain the last display count.
+                }
+                constexpr std::size_t kMaxDetailLength = 64;
+                if (detail.length() > kMaxDetailLength) {
+                    detail.resize(kMaxDetailLength - 3);
+                    detail += "...";
+                }
+
+                std::ostringstream message;
+                message << "Submission " << outcome
+                        << " [" << treeminer::to_string(record.payload.kind) << "]"
+                        << " id=" << record.id;
+                if (httpStatus) {
+                    message << " HTTP=" << *httpStatus;
+                }
+                message << " - " << detail;
+                logger.log(message.str());
+                Logger::logToConsole("\033[2K\r" + message.str() + "\n");
+            });
+        submissionManager->setNetworkStateCallback(
+            [](treeminer::CircuitBreaker::State state) {
+                globalNetworkState = state;
+            });
         submissionManager->setDifficultyHintCallback([](std::uint32_t d) {
             std::lock_guard<std::mutex> lock(mtx);
             if (globalDifficulty != static_cast<int>(d)) {
@@ -403,7 +500,6 @@ int main(int argc, const char *const *argv)
     std::thread uploadThread(uploadGpuInfos);
     uploadThread.detach();
 
-    Logger logger("log", 1024 * 1024);
     SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
 
         // Immutable payload capture: the PHC string is assembled once from the parameters the
@@ -439,23 +535,32 @@ int main(int argc, const char *const *argv)
             std::cout << std::endl << RED << "JOURNAL WRITE FAILED - find at risk: " << e.what() << RESET << std::endl;
             logger.log("JOURNAL WRITE FAILED key=" + key + " error=" + e.what());
         }
+        if (journaled) {
+            try {
+                const auto counts = findJournal->counts();
+                globalQueuedSubmissions = counts.pending + counts.accepted_unconfirmed;
+            } catch (const treeminer::JournalError&) {
+                // The durable append succeeded; the next outcome refreshes the display count.
+            }
+        }
         logger.log("found key=" + key + " hash=" + hashed_data + (journaled ? " journaled" : " NOT-JOURNALED"));
 
-        std::cout << std::endl;
+        std::ostringstream findMessage;
         if (payload.kind == treeminer::FindKind::XEN11) {
             size_t capitalCount = std::count_if(hashed_pure.begin(), hashed_pure.end(), [](unsigned char c) { return std::isupper(c); });
             if (capitalCount >= 50) {
-                std::cout << GREEN << "Superblock found!" << RESET;
+                findMessage << GREEN << "Superblock found!" << RESET;
                 globalSuperBlockCount++;
             } else {
-                std::cout << GREEN << "Normalblock found!" << RESET;
+                findMessage << GREEN << "Normalblock found!" << RESET;
                 globalNormalBlockCount++;
             }
         } else {
-            std::cout << YELLOW << "Xuni found!" << RESET;
+            findMessage << YELLOW << "Xuni found!" << RESET;
             globalXuniBlockCount++;
         }
-        std::cout << (journaled ? " Journaled (durable); submission queued." : " NOT journaled!") << std::endl;
+        findMessage << (journaled ? " Journaled (durable); submission queued." : " NOT journaled!");
+        Logger::logToConsole("\033[2K\r" + findMessage.str() + "\n");
 
         if (submissionManager) {
             submissionManager->notifyFindAppended();
@@ -499,13 +604,13 @@ int main(int argc, const char *const *argv)
             auto minutes = chrono::duration_cast<chrono::minutes>(elapsed_time).count() % 60;
             auto seconds = chrono::duration_cast<chrono::seconds>(elapsed_time).count() % 60;
             stream << "\033[2K\r"
-                   << "Mining: " << globalHashCount << " Hashes [";
+                   << "Mining: " << globalHashCount << " [";
             if (hours > 0) {
                 stream << hours << ":";
             }
             stream  << std::setw(2) << std::setfill('0') << minutes << ":";
             stream << std::setw(2) << std::setfill('0') << seconds << ", ";
-            stream << gpuCount << " GPUs, ";
+            stream << "GPU:" << gpuCount << ", ";
             if(globalSuperBlockCount > 0) {
                 stream << RED  << " super:" << globalSuperBlockCount<< RESET << ", " ;
             }
@@ -515,8 +620,11 @@ int main(int argc, const char *const *argv)
             if(globalXuniBlockCount > 0) {
                 stream << YELLOW << "xuni:"  << globalXuniBlockCount << RESET << ", " ;
             }
-            stream << std::fixed << std::setprecision(2) << totalHashrate << " Hashes/s, "
-                   << "Difficulty=" << difficulty << "]";
+            stream << "Q:" << globalQueuedSubmissions
+                   << " net:" << networkStateLabel(globalNetworkState)
+                   << " last:" << submissionStateLabel(globalLastSubmission) << ", ";
+            stream << std::fixed << std::setprecision(2) << totalHashrate / 1000.0f
+                   << " kH/s, D:" << difficulty << "]";
             std::string logMessage = stream.str();
             Logger::logToConsole(logMessage);
         }
