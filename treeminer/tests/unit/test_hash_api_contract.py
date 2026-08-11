@@ -319,7 +319,7 @@ def test_mine_unit_routes_batch_compute_through_hash_api():
     assert "hashapi::CudaHashBackend hashBackend_" in header
     assert "hashapi::HashApiResult batchCompute" in header
     assert "hashBackend_.runBatch(request)" in implementation
-    assert "request.allow_xuni = is_within_five_minutes_of_hour()" in implementation
+    assert "request.allow_xuni = isWithinXuniWindow()" in implementation
     assert "request.first_block_dynamic_chunk_auto = true" in implementation
     assert "submitMatches" in implementation
     assert "std::vector<HashItem>" not in header
@@ -395,6 +395,52 @@ def test_mine_unit_uses_hash_api_batch_size_tuning_without_overriding_manual_lim
     assert "batchSize = batchDecision.selected_batch_size" in implementation
     assert "request.gpu_first_blocks = true" in implementation
     assert implementation.index("backend_.releaseBuffers()") < implementation.index("backend_.getFreeMemory()")
+
+
+def test_live_miner_cuda_stream_experiment_is_bounded_and_shares_vram():
+    main = read("src/main.cpp")
+    mine_unit = read("src/MineUnit.cpp")
+    common = read("src/MiningCommon.h")
+
+    assert '("cudaStreams", po::value<int>()' in main
+    assert "requestedStreams > 2" in main
+    assert "globalCudaStreamsPerDevice" in common
+    assert "shareableMemory / globalCudaStreamsPerDevice" in mine_unit
+    assert "gpuinfo.streamIndex" in main
+    assert "miningThread.join()" in main
+
+
+def test_live_miner_cpu_sidecar_is_explicit_and_joined():
+    main = read("src/main.cpp")
+    worker = read("src/CpuMiningWorker.cpp")
+
+    assert '("cpuWorkers", po::value<int>()' in main
+    assert "kCpuMiningBatchSize = 64" in main
+    assert "cpuMiningWorker->stop()" in main
+    assert "cpuMiningWorker->join()" in main
+    assert "digestFromProtocolPhc" in worker
+    assert "submit_callback_" in worker
+    assert '"CPU"' in worker
+
+
+def test_live_miner_terminal_messages_describe_submission_lifecycle():
+    main = read("src/main.cpp")
+
+    for message in [
+        "Secured locally; uplink queued.",
+        "LOCAL SAVE FAILED; not queued.",
+        'outcome = "UPLINK ACCEPTED"',
+        'detail = "confirmation pending"',
+        'outcome = "UPLINK CONFIRMED"',
+        'detail = "server record verified"',
+        'outcome = "UPLINK RETRY"',
+        'detail = "network unavailable; retry scheduled"',
+        'outcome = "UPLINK QUARANTINED"',
+        'outcome = "UPLINK REJECTED"',
+    ]:
+        assert message in main
+
+    assert "Journaled (durable); submission queued." not in main
 
 
 def test_hash_api_benchmark_runner_exists():

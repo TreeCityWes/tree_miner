@@ -2,6 +2,7 @@
 #define LOGGER_H
 
 #include <fstream>
+#include <functional>
 #include <mutex>
 #include <string>
 
@@ -11,6 +12,8 @@ public:
 
     void log(const std::string& message);
     static void logToConsole(const std::string& message);
+    static void setConsoleSink(std::function<void(const std::string&)> sink);
+    static void clearConsoleSink();
 
 private:
     std::string getCurrentTimestamp();
@@ -25,6 +28,7 @@ private:
     int fileIndex_ = 0;
     std::mutex mutex_;
     static std::mutex consoleMutex_;
+    static std::function<void(const std::string&)> consoleSink_;
 };
 
 #endif

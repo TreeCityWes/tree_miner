@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <nlohmann/json.hpp>
 #include "HttpClient.h"
+#include "Logger.h"
 #include "MiningCommon.h"
 
 std::function<void(std::uint32_t)> globalDifficultyObserver;
@@ -90,7 +91,7 @@ void updateDifficulty()
             if (globalDifficulty != newDifficulty)
             {
                 globalDifficulty = newDifficulty;
-                std::cout << "Updated difficulty to " << globalDifficulty << std::endl;
+                Logger::logToConsole("Difficulty updated to " + std::to_string(globalDifficulty.load()) + "\n");
             }
         }
         if (globalDifficultyObserver)

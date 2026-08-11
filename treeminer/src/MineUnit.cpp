@@ -8,14 +8,6 @@
 #include "hashapi/HashApiTuning.h"
 using namespace std;
 
-bool is_within_five_minutes_of_hour() {
-	auto now = std::chrono::system_clock::now();
-	std::time_t time_now = std::chrono::system_clock::to_time_t(now);
-	tm* timeinfo = std::localtime(&time_now);
-	int minutes = timeinfo->tm_min;
-	return 0 <= minutes && minutes < 5 || 55 <= minutes && minutes < 60;
-}
-
 int MineUnit::runMineLoop()
 {// run mine loop in fixed diff until it's break
 	int batchComputeCount = 0;
@@ -28,12 +20,19 @@ int MineUnit::runMineLoop()
 	// the next pool, or a difficulty increase can select a tiny batch from the scraps.
 	backend_.releaseBuffers();
 	size_t freeMemory = backend_.getFreeMemory();
+	if (globalCudaStreamsPerDevice > 1) {
+		constexpr size_t kDeviceHeadroom = 512ULL * 1024ULL * 1024ULL;
+		const size_t shareableMemory = totalMemory > kDeviceHeadroom
+			? totalMemory - kDeviceHeadroom
+			: totalMemory;
+		freeMemory = std::min(freeMemory, shareableMemory / globalCudaStreamsPerDevice);
+	}
 	auto batchDecision = hashapi::selectCudaBatchSize(
 		freeMemory,
 		static_cast<std::uint32_t>(difficulty),
 		globalMaxBatchSize);
 	if(batchDecision.selected_batch_size == 0) {
-		std::cout << "Not enough memory" << std::endl;
+		Logger::logToConsole("GPU memory allocation unavailable; retrying with backoff\n");
 		return 1;
 	}
 	batchSize = batchDecision.selected_batch_size;
@@ -82,7 +81,7 @@ int MineUnit::runMineLoop()
 		std::string blockPattern = globalTestBlockPattern.empty() ? "XEN11" : globalTestBlockPattern;
 		hashapi::HashApiResult batchResult = batchCompute(extractedSalt, keyPrefix, blockPattern);
 		if (!batchResult.ok) {
-			std::cerr << "Hash API batch failed: " << batchResult.error << std::endl;
+			Logger::logToConsole("Hash batch failed: " + batchResult.error + "\n");
 			return 1;
 		}
 		submitMatches(extractedSalt, batchResult);
@@ -109,7 +108,7 @@ hashapi::HashApiResult MineUnit::batchCompute(std::string salt, std::string keyP
 	request.difficulty = static_cast<std::uint32_t>(difficulty);
 	request.batch_size = batchSize;
 	request.device_id = backend_.getDeviceInfo().index;
-	request.allow_xuni = is_within_five_minutes_of_hour();
+	request.allow_xuni = isWithinXuniWindow();
 	request.first_block_dynamic_chunk_auto = true;
 	request.gpu_first_blocks = true;
 	return hashBackend_.runBatch(request);
@@ -126,7 +125,7 @@ void MineUnit::submitMatches(const std::string& salt, const hashapi::HashApiResu
 
 		// Journal-first: a XUNI found as the window closes mid-batch is still captured;
 		// the submission layer parks it (ParkedXuniWindow) instead of dropping it here.
-		submitCallback(salt, match.key, match.hash, static_cast<std::uint32_t>(difficulty), attempts, hashrate);
+		submitCallback(salt, match.key, match.hash, static_cast<std::uint32_t>(difficulty), attempts, hashrate, "GPU");
 		attempts = 0;
 	}
 
@@ -154,5 +153,5 @@ void MineUnit::stat()
 	hashrate = rate;
 
 	int memoryInGB = static_cast<int>(std::round(static_cast<float>(gpuMemory) / (1024 * 1024 * 1024)));
-	statCallback({ (int)backend_.getDeviceInfo().index, busId, gpuName, memoryInGB, usedMemory/(float)gpuMemory, 0, (float)rate, "", hashtotal });
+	statCallback({ (int)backend_.getDeviceInfo().index, busId, gpuName, memoryInGB, usedMemory/(float)gpuMemory, 0, (float)rate, "", hashtotal, streamIndex_ });
 }

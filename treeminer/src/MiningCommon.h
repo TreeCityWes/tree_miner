@@ -9,6 +9,8 @@
 #include <map>
 #include <chrono>
 
+#include "submit/CircuitBreaker.h"
+
 constexpr std::size_t HASH_LENGTH = 64;
 constexpr std::size_t MAX_SUBMIT_RETRIES = 5;
 
@@ -56,6 +58,28 @@ extern std::string globalRpcLink;
 extern std::string globalTestBlockPattern;
 extern std::string globalSelfMiningPrefix;
 extern std::size_t globalMaxBatchSize;
+extern std::size_t globalCudaStreamsPerDevice;
+
+enum class LastSubmissionState {
+	None,
+	Accepted,
+	Unconfirmed,
+	Retry,
+	Parked,
+	Failed,
+};
+
+extern std::atomic<std::size_t> globalQueuedXnm;
+extern std::atomic<std::size_t> globalQueuedXuni;
+extern std::atomic<LastSubmissionState> globalLastSubmission;
+extern std::atomic<treeminer::CircuitBreaker::State> globalNetworkState;
+extern std::atomic<std::size_t> globalCpuWorkers;
+extern std::atomic<double> globalCpuHashrate;
+
+const char* submissionStateLabel(LastSubmissionState state);
+const char* networkStateLabel(treeminer::CircuitBreaker::State state);
+
+bool isWithinXuniWindow();
 
 struct gpuInfo
 {
@@ -68,11 +92,12 @@ struct gpuInfo
 	float hashrate;
 	std::string power;
 	size_t hashCount;
+	int streamIndex = 0;
 };
 extern std::map<int, std::pair<gpuInfo, std::chrono::steady_clock::time_point>> globalGpuInfos;
 extern std::mutex globalGpuInfosMutex;
 
-using SubmitCallback = std::function<void(const std::string& hexsalt, const std::string& key, const std::string& hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate)>;
+using SubmitCallback = std::function<void(const std::string& hexsalt, const std::string& key, const std::string& hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate, const std::string& source)>;
 using StatCallback = std::function<void(const gpuInfo gpuinfo)>;
 
 struct MinerConfig {

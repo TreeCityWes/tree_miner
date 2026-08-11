@@ -30,12 +30,15 @@ private:
 	std::size_t gpuMemory = 0;
 	std::size_t usedMemory = 0;
 	int busId;
+	int streamIndex_ = 0;
 
 public:
 	MineUnit(ComputeBackend& backend, std::size_t difficulty,
-		SubmitCallback submitCallback, StatCallback statCallback)
-		: backend_(backend), hashBackend_(backend), difficulty(difficulty),
-		submitCallback(submitCallback), statCallback(statCallback)
+			SubmitCallback submitCallback, StatCallback statCallback,
+			int streamIndex = 0)
+			: backend_(backend), hashBackend_(backend), difficulty(difficulty),
+			submitCallback(submitCallback), statCallback(statCallback),
+			streamIndex_(streamIndex)
 	{
 	}
 

@@ -7,6 +7,7 @@
 #include <sstream>
 
 std::mutex Logger::consoleMutex_;
+std::function<void(const std::string&)> Logger::consoleSink_;
 
 Logger::Logger(const std::string& baseFilename, size_t maxFileSize)
     : baseFilename_(baseFilename), maxFileSize_(maxFileSize) {
@@ -54,6 +55,20 @@ void Logger::switchFile() {
 
 void Logger::logToConsole(const std::string& message) {
     std::lock_guard<std::mutex> lock(consoleMutex_);
+    if (consoleSink_) {
+        consoleSink_(message);
+        return;
+    }
     std::cout << message;
     std::cout.flush();
+}
+
+void Logger::setConsoleSink(std::function<void(const std::string&)> sink) {
+    std::lock_guard<std::mutex> lock(consoleMutex_);
+    consoleSink_ = std::move(sink);
+}
+
+void Logger::clearConsoleSink() {
+    std::lock_guard<std::mutex> lock(consoleMutex_);
+    consoleSink_ = {};
 }

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <thread>
 #include <algorithm>
+#include <set>
 #include <nvml.h>
 #include "HttpClient.h"
 
@@ -103,6 +104,70 @@ std::string getGpuStatsJson() {
     result["rejectedBlocks"] = globalFailedBlockCount.load();
 
     return result.dump();
+}
+
+nlohmann::json getMinerDashboardData() {
+    nlohmann::json result;
+    nlohmann::json gpuArray = nlohmann::json::array();
+    double gpuHashrate = 0.0;
+    std::set<int> devices;
+
+    const auto nowSteady = std::chrono::steady_clock::now();
+    {
+        std::lock_guard<std::mutex> guard(globalGpuInfosMutex);
+        for (const auto& entry : globalGpuInfos) {
+            if (nowSteady - entry.second.second > std::chrono::minutes(2)) {
+                continue;
+            }
+            const auto& info = entry.second.first;
+            nlohmann::json gpu;
+            gpu["index"] = info.index;
+            gpu["stream"] = info.streamIndex;
+            gpu["name"] = info.name;
+            gpu["memory_gib"] = info.memory;
+            gpu["memory_used_percent"] = info.usingMemory * 100.0;
+            gpu["hashrate"] = info.hashrate;
+            gpu["hash_count"] = info.hashCount;
+            gpuArray.push_back(std::move(gpu));
+            devices.insert(info.index);
+            gpuHashrate += info.hashrate;
+        }
+    }
+
+    const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now() - start_time).count();
+    const double cpuHashrate = globalCpuHashrate.load();
+    result["identity"] = {
+        {"name", globalCustomName.empty() ? "TreeMiner" : globalCustomName},
+        {"machine_id", machineId},
+        {"address", globalUserAddress}
+    };
+    result["engine"] = {
+        {"running", running.load()},
+        {"uptime_seconds", uptime},
+        {"difficulty", globalDifficulty.load()},
+        {"gpu_devices", devices.size()},
+        {"cuda_streams", gpuArray.size()},
+        {"cpu_workers", globalCpuWorkers.load()},
+        {"gpu_hashrate", gpuHashrate},
+        {"cpu_hashrate", cpuHashrate},
+        {"total_hashrate", gpuHashrate + cpuHashrate}
+    };
+    result["finds"] = {
+        {"xnm", globalNormalBlockCount.load() + globalSuperBlockCount.load()},
+        {"xuni", globalXuniBlockCount.load()},
+        {"super", globalSuperBlockCount.load()},
+        {"rejected", globalFailedBlockCount.load()}
+    };
+    result["delivery"] = {
+        {"network", networkStateLabel(globalNetworkState.load())},
+        {"last_submission", submissionStateLabel(globalLastSubmission.load())},
+        {"queued_xnm", globalQueuedXnm.load()},
+        {"queued_xuni", globalQueuedXuni.load()},
+        {"queued_total", globalQueuedXnm.load() + globalQueuedXuni.load()}
+    };
+    result["gpus"] = std::move(gpuArray);
+    return result;
 }
 
 nlohmann::json getStatData() {

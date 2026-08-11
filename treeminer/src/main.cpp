@@ -15,6 +15,7 @@
 #include "MiningCommon.h"
 #include "CudaDevice.h"
 #include "CudaBackend.h"
+#include "CpuMiningWorker.h"
 #include "MineUnit.h"
 #include "AppConfig.h"
 #include "Logger.h"
@@ -34,6 +35,7 @@
 #include "submit/HttpTransport.h"
 #include "submit/SubmissionManager.h"
 #include "StatReporter.h"
+#include "TerminalUi.h"
 #include "LocalServer.h"
 #include "BlockSubmitter.h"
 #include "hashapi/HashApiCli.h"
@@ -51,40 +53,6 @@ std::string globalMqttBroker = "";
 std::string globalWorkerId = "";
 std::unique_ptr<PlatformManager> globalPlatformManager;
 std::string globalTestBlockPattern = "";
-
-enum class LastSubmissionState {
-    None,
-    Accepted,
-    Unconfirmed,
-    Retry,
-    Parked,
-    Failed,
-};
-
-std::atomic<std::size_t> globalQueuedXnm{0};
-std::atomic<std::size_t> globalQueuedXuni{0};
-std::atomic<LastSubmissionState> globalLastSubmission{LastSubmissionState::None};
-std::atomic<treeminer::CircuitBreaker::State> globalNetworkState{
-    treeminer::CircuitBreaker::State::Closed};
-
-const char* submissionStateLabel(LastSubmissionState state) {
-    switch (state) {
-        case LastSubmissionState::Accepted: return "OK";
-        case LastSubmissionState::Unconfirmed: return "wait";
-        case LastSubmissionState::Retry: return "retry";
-        case LastSubmissionState::Parked: return "parked";
-        case LastSubmissionState::Failed: return "failed";
-        default: return "-";
-    }
-}
-
-const char* networkStateLabel(treeminer::CircuitBreaker::State state) {
-    switch (state) {
-        case treeminer::CircuitBreaker::State::Open: return "down";
-        case treeminer::CircuitBreaker::State::HalfOpen: return "probe";
-        default: return "up";
-    }
-}
 
 #ifdef _WIN32
 BOOL ctrlHandler(DWORD fdwCtrlType) {
@@ -151,17 +119,19 @@ std::set<int> parseDeviceList(const std::string& deviceListText, int deviceCount
 
 static void runMiningOnDevice(ComputeBackend& backend,
                               SubmitCallback submitCallback,
-                              StatCallback statCallback)
+                              StatCallback statCallback,
+                              int streamIndex)
 {
     backend.activate();
 
     while (running)
     {
-        MineUnit unit(backend, globalDifficulty, submitCallback, statCallback);
+        MineUnit unit(backend, globalDifficulty, submitCallback, statCallback, streamIndex);
         int rc = unit.runMineLoop();
         if (rc < 0)
         {
-            std::cerr << "Mining loop failed on device #" << backend.getDeviceInfo().index << std::endl;
+            Logger::logToConsole("Mining loop failed on device #" +
+                                 std::to_string(backend.getDeviceInfo().index) + "\n");
             break;
         }
         if (rc > 0)
@@ -183,6 +153,8 @@ int main(int argc, const char *const *argv)
     bool donotupload = false;
     static bool isTestFixedDiff = false;
     std::string deviceList = "";
+    std::size_t cpuWorkerCount = 0;
+    std::string displayMode = "logs";
 
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--execute") {
@@ -218,7 +190,10 @@ int main(int argc, const char *const *argv)
             ("mqtt-broker", po::value<std::string>(), "MQTT broker URI for platform mode (e.g. tcp://broker:1883)")
             ("worker-id", po::value<std::string>(), "override worker ID for platform registration")
             ("testBlockPattern", po::value<std::string>(), "override block detection pattern for testing (default: XEN11)")
-            ("batchSize", po::value<int>(), "limit GPU batch size (reduces VRAM usage)");
+            ("batchSize", po::value<int>(), "limit GPU batch size (reduces VRAM usage)")
+            ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
+            ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
+            ("display", po::value<std::string>(), "terminal display: logs, terminal, or prompt");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
         po::notify(vm);
@@ -226,6 +201,23 @@ int main(int argc, const char *const *argv)
         if (vm.count("help")) {
             std::cout << desc << "\n";
             return 0;
+        }
+
+        if (vm.count("display")) {
+            displayMode = vm["display"].as<std::string>();
+        }
+        if (displayMode != "logs" && displayMode != "terminal" && displayMode != "prompt") {
+            std::cerr << "The display mode must be logs, terminal, or prompt." << std::endl;
+            return -1;
+        }
+        if (displayMode == "prompt") {
+            std::cout << "\nTreeMiner display\n"
+                      << "  1. Presentation terminal\n"
+                      << "  2. Scrolling logs\n"
+                      << "Select [1]: ";
+            std::string selection;
+            std::getline(std::cin, selection);
+            displayMode = selection == "2" ? "logs" : "terminal";
         }
 
         if(vm.count("testFixedDiff")){
@@ -241,6 +233,31 @@ int main(int argc, const char *const *argv)
         if(vm.count("batchSize")){
             globalMaxBatchSize = vm["batchSize"].as<int>();
             std::cout << "Max batch size override: " << globalMaxBatchSize << std::endl;
+        }
+
+        if (vm.count("cudaStreams")) {
+            const int requestedStreams = vm["cudaStreams"].as<int>();
+            if (requestedStreams < 1 || requestedStreams > 2) {
+                std::cerr << "The argument (" << requestedStreams
+                          << ") for CUDA streams must be 1 or 2." << std::endl;
+                return -1;
+            }
+            globalCudaStreamsPerDevice = static_cast<std::size_t>(requestedStreams);
+            std::cout << "CUDA streams per device: " << globalCudaStreamsPerDevice << std::endl;
+        }
+
+        if (vm.count("cpuWorkers")) {
+            const int requestedWorkers = vm["cpuWorkers"].as<int>();
+            const unsigned int logicalThreads = std::thread::hardware_concurrency();
+            if (requestedWorkers < 0 ||
+                (logicalThreads > 0 && requestedWorkers > static_cast<int>(logicalThreads))) {
+                std::cerr << "The argument (" << requestedWorkers
+                          << ") for CPU workers must be between 0 and "
+                          << (logicalThreads > 0 ? logicalThreads : 256) << "." << std::endl;
+                return -1;
+            }
+            cpuWorkerCount = static_cast<std::size_t>(requestedWorkers);
+            std::cout << "CPU sidecar workers: " << cpuWorkerCount << std::endl;
         }
 
         AppConfig appConfig(CONFIG_FILENAME);
@@ -412,32 +429,38 @@ int main(int argc, const char *const *argv)
             [&logger, &findJournal](const treeminer::FindRecord& record,
                       const treeminer::Classification& classification,
                       std::optional<int> httpStatus) {
-                const char* outcome = "UPDATED";
+                const char* outcome = "UPLINK UPDATED";
                 std::string detail = classification.reason;
                 switch (classification.next_status) {
                     case treeminer::FindStatus::Acked:
-                        outcome = "ACCEPTED";
-                        detail = "confirmed via /get_block";
+                        outcome = "UPLINK CONFIRMED";
+                        detail = "server record verified";
                         globalLastSubmission = LastSubmissionState::Accepted;
                         break;
                     case treeminer::FindStatus::AcceptedUnconfirmed:
-                        outcome = "UNCONFIRMED";
-                        detail = "confirmation retry scheduled";
+                        outcome = "UPLINK ACCEPTED";
+                        detail = "confirmation pending";
                         globalLastSubmission = LastSubmissionState::Unconfirmed;
                         break;
                     case treeminer::FindStatus::Pending:
-                        outcome = "RETRY";
+                        outcome = "UPLINK RETRY";
+                        if (classification.reason.rfind("transport failure", 0) == 0) {
+                            detail = "network unavailable; retry scheduled";
+                        }
                         globalLastSubmission = LastSubmissionState::Retry;
                         break;
                     case treeminer::FindStatus::ParkedDifficulty:
                     case treeminer::FindStatus::ParkedXuniWindow:
-                        outcome = "PARKED";
+                        outcome = "UPLINK PARKED";
                         globalLastSubmission = LastSubmissionState::Parked;
                         break;
                     case treeminer::FindStatus::Quarantined:
+                        outcome = "UPLINK QUARANTINED";
+                        globalLastSubmission = LastSubmissionState::Failed;
+                        break;
                     case treeminer::FindStatus::Dead:
                     case treeminer::FindStatus::PermanentlyInvalid:
-                        outcome = "REJECTED";
+                        outcome = "UPLINK REJECTED";
                         globalLastSubmission = LastSubmissionState::Failed;
                         break;
                     default:
@@ -457,7 +480,7 @@ int main(int argc, const char *const *argv)
                 }
 
                 std::ostringstream message;
-                message << "Submission " << outcome
+                message << outcome
                         << " [" << treeminer::to_string(record.payload.kind) << "]"
                         << " id=" << record.id;
                 if (httpStatus) {
@@ -475,7 +498,8 @@ int main(int argc, const char *const *argv)
             std::lock_guard<std::mutex> lock(mtx);
             if (globalDifficulty != static_cast<int>(d)) {
                 globalDifficulty = static_cast<int>(d);
-                std::cout << "Difficulty updated from server hint: " << d << std::endl;
+                Logger::logToConsole("Difficulty updated from server hint: " +
+                                     std::to_string(d) + "\n");
             }
         });
         globalDifficultyObserver = [&manager = *submissionManager](std::uint32_t d) {
@@ -504,7 +528,7 @@ int main(int argc, const char *const *argv)
     std::thread uploadThread(uploadGpuInfos);
     uploadThread.detach();
 
-    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
+    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate, const std::string &source) {
 
         // Immutable payload capture: the PHC string is assembled once from the parameters the
         // GPU batch actually used. Upstream re-hashed with globalDifficulty at submit time and
@@ -536,7 +560,9 @@ int main(int argc, const char *const *argv)
             findJournal->append(payload);
             journaled = true;
         } catch (const treeminer::JournalError& e) {
-            std::cout << std::endl << RED << "JOURNAL WRITE FAILED - find at risk: " << e.what() << RESET << std::endl;
+            Logger::logToConsole(std::string(RED) +
+                                 "CRITICAL - find could not be secured: " + e.what() +
+                                 RESET + "\n");
             logger.log("JOURNAL WRITE FAILED key=" + key + " error=" + e.what());
         }
         if (journaled) {
@@ -548,9 +574,10 @@ int main(int argc, const char *const *argv)
                 // The durable append succeeded; the next outcome refreshes the display count.
             }
         }
-        logger.log("found key=" + key + " hash=" + hashed_data + (journaled ? " journaled" : " NOT-JOURNALED"));
+        logger.log("found source=" + source + " key=" + key + " hash=" + hashed_data + (journaled ? " journaled" : " NOT-JOURNALED"));
 
         std::ostringstream findMessage;
+        findMessage << source << " ";
         if (payload.kind == treeminer::FindKind::XEN11) {
             size_t capitalCount = std::count_if(hashed_pure.begin(), hashed_pure.end(), [](unsigned char c) { return std::isupper(c); });
             if (capitalCount >= 50) {
@@ -564,7 +591,9 @@ int main(int argc, const char *const *argv)
             findMessage << YELLOW << "Xuni found!" << RESET;
             globalXuniBlockCount++;
         }
-        findMessage << (journaled ? " Journaled (durable); submission queued." : " NOT journaled!");
+        findMessage << (journaled
+            ? " Secured locally; uplink queued."
+            : " LOCAL SAVE FAILED; not queued.");
         Logger::logToConsole("\033[2K\r" + findMessage.str() + "\n");
 
         if (submissionManager) {
@@ -572,11 +601,15 @@ int main(int argc, const char *const *argv)
         }
     };
 
-    StatCallback statCallback = [](const gpuInfo gpuinfo)
+    std::unique_ptr<treeminer::CpuMiningWorker> cpuMiningWorker;
+    std::unique_ptr<treeminer::TerminalUi> terminalUi;
+
+    StatCallback statCallback = [&cpuMiningWorker, &terminalUi](const gpuInfo gpuinfo)
     {
         {
             std::lock_guard<std::mutex> lock(globalGpuInfosMutex);
-            globalGpuInfos[gpuinfo.index] = {gpuinfo, std::chrono::steady_clock::now()};
+            const int statsKey = gpuinfo.index * 16 + gpuinfo.streamIndex;
+            globalGpuInfos[statsKey] = {gpuinfo, std::chrono::steady_clock::now()};
         }
         int difficulty = 40404;
         {
@@ -589,7 +622,8 @@ int main(int argc, const char *const *argv)
         auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(globalGpuInfosMutex);
-            int gpuCount = 0;
+            std::set<int> activeDevices;
+            int streamCount = 0;
             for (const auto &kv : globalGpuInfos)
             {
                 auto duration = std::chrono::duration_cast<std::chrono::minutes>(now - kv.second.second);
@@ -597,8 +631,9 @@ int main(int argc, const char *const *argv)
                 {
                     continue;
                 }
-                gpuCount++;
                 const gpuInfo &info = kv.second.first;
+                activeDevices.insert(info.index);
+                streamCount++;
                 totalHashCount += info.hashCount;
                 totalHashrate += info.hashrate;
             }
@@ -608,14 +643,30 @@ int main(int argc, const char *const *argv)
             auto hours = chrono::duration_cast<chrono::hours>(elapsed_time).count();
             auto minutes = chrono::duration_cast<chrono::minutes>(elapsed_time).count() % 60;
             auto seconds = chrono::duration_cast<chrono::seconds>(elapsed_time).count() % 60;
+            const auto cpuStats = cpuMiningWorker
+                ? cpuMiningWorker->stats()
+                : treeminer::CpuMiningWorker::Stats{};
+            globalCpuWorkers = cpuStats.active_workers;
+            globalCpuHashrate = cpuStats.hashrate;
+            const std::uint64_t combinedHashCount =
+                static_cast<std::uint64_t>(globalHashCount.load()) + cpuStats.attempts;
             stream << "\033[2K\r"
-                   << "Mining: " << globalHashCount << " [";
+                   << "Mining: " << combinedHashCount << " [";
             if (hours > 0) {
                 stream << hours << ":";
             }
             stream  << std::setw(2) << std::setfill('0') << minutes << ":";
             stream << std::setw(2) << std::setfill('0') << seconds << ", ";
-            stream << "GPU:" << gpuCount << ", ";
+            stream << "GPU:" << activeDevices.size();
+            if (streamCount > 1) {
+                stream << " streams:" << streamCount;
+            }
+            if (cpuStats.active_workers > 0) {
+                stream << ", CPU:" << cpuStats.active_workers
+                       << " " << std::fixed << std::setprecision(2)
+                       << cpuStats.hashrate / 1000.0 << " kH/s";
+            }
+            stream << ", ";
             if(globalSuperBlockCount > 0) {
                 stream << RED  << " super:" << globalSuperBlockCount<< RESET << ", " ;
             }
@@ -629,32 +680,89 @@ int main(int argc, const char *const *argv)
                    << " Q_XUNI:" << globalQueuedXuni
                    << " net:" << networkStateLabel(globalNetworkState)
                    << " last:" << submissionStateLabel(globalLastSubmission) << ", ";
-            stream << std::fixed << std::setprecision(2) << totalHashrate / 1000.0f
-                   << " kH/s, D:" << difficulty << "]";
-            std::string logMessage = stream.str();
-            Logger::logToConsole(logMessage);
+            const double combinedHashrate = static_cast<double>(totalHashrate) + cpuStats.hashrate;
+            stream << std::fixed << std::setprecision(2) << combinedHashrate / 1000.0
+                   << " kH/s total, D:" << difficulty << "]";
+            if (!terminalUi) {
+                Logger::logToConsole(stream.str());
+            }
         }
     };
+
+    if (displayMode == "terminal") {
+        terminalUi = std::make_unique<treeminer::TerminalUi>();
+        terminalUi->start();
+        Logger::setConsoleSink([ui = terminalUi.get()](const std::string& message) {
+            ui->postEvent(message);
+        });
+    }
+
+    if (cpuWorkerCount > 0) {
+        constexpr std::size_t kCpuMiningBatchSize = 64;
+        auto cpuWorkSequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+        treeminer::CpuMiningWorker::Config cpuConfig{cpuWorkerCount, kCpuMiningBatchSize};
+        cpuMiningWorker = std::make_unique<treeminer::CpuMiningWorker>(
+            cpuConfig,
+            [] { return static_cast<std::uint32_t>(globalDifficulty.load()); },
+            [cpuWorkSequence] {
+                treeminer::CpuMiningWorker::Work work;
+                const MiningContext ctx = MiningCoordinator::getInstance().getContext();
+                if (ctx.mode == MiningMode::PLATFORM_MINING) {
+                    work.salt_hex = ctx.address.substr(0, 2) == "0x"
+                        ? ctx.address.substr(2)
+                        : ctx.address;
+                    work.key_prefix = ctx.prefix;
+                } else {
+                    work.salt_hex = globalUserAddress.substr(2);
+                    work.key_prefix = globalSelfMiningPrefix;
+                    if (work.key_prefix.empty() && globalDevfeePermillage > 0) {
+                        const std::uint64_t slot = cpuWorkSequence->fetch_add(1) % 1000;
+                        const std::uint64_t feeStart = 1000 - static_cast<std::uint64_t>(globalDevfeePermillage.load());
+                        if (slot >= feeStart) {
+                            const bool useEcoFee = !globalEcoDevfeeAddress.empty() &&
+                                slot >= 1000 - static_cast<std::uint64_t>(globalDevfeePermillage.load() / 2);
+                            work.salt_hex = (useEcoFee ? globalEcoDevfeeAddress : globalDevfeeAddress).substr(2);
+                            work.key_prefix = (useEcoFee ? ECODEVFEE_PREFIX : DEVFEE_PREFIX) +
+                                globalUserAddress.substr(2);
+                        }
+                    }
+                }
+                work.target_pattern = globalTestBlockPattern.empty() ? "XEN11" : globalTestBlockPattern;
+                work.allow_xuni = isWithinXuniWindow();
+                return work;
+            },
+            submitCallback,
+            [] { return running.load(); });
+        cpuMiningWorker->start();
+    }
 
     std::size_t i = 0;
     for (auto &device : devices)
     {
         if(usedDevices.find(i) != usedDevices.end()){
-            std::cout << "Device #" << i << ": "
-                    << device.getName() << std::endl;
+            Logger::logToConsole("Device #" + std::to_string(i) + ": " + device.getName() + "\n");
         }
         i++;
     }
     start_time = std::chrono::system_clock::now();
 
-    std::map<int, std::unique_ptr<ComputeBackend>> backends;
+    std::vector<std::unique_ptr<ComputeBackend>> backends;
+    std::vector<int> backendStreamIndexes;
     for (auto deviceIndex : usedDevices) {
-        backends[deviceIndex] = std::make_unique<CudaBackend>(static_cast<int>(deviceIndex));
+        for (std::size_t streamIndex = 0; streamIndex < globalCudaStreamsPerDevice; ++streamIndex) {
+            backends.push_back(std::make_unique<CudaBackend>(static_cast<int>(deviceIndex)));
+            backendStreamIndexes.push_back(static_cast<int>(streamIndex));
+        }
     }
 
-    for (auto deviceIndex : usedDevices) {
-        std::thread t(runMiningOnDevice, std::ref(*backends[deviceIndex]), submitCallback, statCallback);
-        t.detach();
+    std::vector<std::thread> miningThreads;
+    miningThreads.reserve(backends.size());
+    for (std::size_t worker = 0; worker < backends.size(); ++worker) {
+        miningThreads.emplace_back(runMiningOnDevice,
+                                   std::ref(*backends[worker]),
+                                   submitCallback,
+                                   statCallback,
+                                   backendStreamIndexes[worker]);
     }
 
     if (globalPlatformMode) {
@@ -688,6 +796,7 @@ int main(int argc, const char *const *argv)
 
     setupRoutes();
     std::thread serverThread(startServer);
+    Logger::logToConsole("LAN console: " + getConsoleUrl() + "\n");
     serverThread.detach();
     if(!donotupload){
         std::thread uploadStatThread(UploadDataPeriodically, 60);
@@ -697,6 +806,22 @@ int main(int argc, const char *const *argv)
     while (running)
     {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    if (cpuMiningWorker) {
+        cpuMiningWorker->stop();
+        cpuMiningWorker->join();
+    }
+
+    for (auto& miningThread : miningThreads) {
+        if (miningThread.joinable()) {
+            miningThread.join();
+        }
+    }
+
+    if (terminalUi) {
+        Logger::clearConsoleSink();
+        terminalUi->stop();
     }
 
     if (globalPlatformManager) {

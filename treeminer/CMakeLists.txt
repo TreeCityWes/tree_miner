@@ -110,6 +110,7 @@ if(XENBLOCKS_BUILD_MINER)
 endif()
 if(TREEMINER_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(tests/unit/cpu)
     add_subdirectory(tests/unit/journal)
     add_subdirectory(tests/unit/submit)
 endif()
@@ -120,6 +121,7 @@ set(SOURCE_FILES
     src/ProcessMonitor.cpp
     src/DifficultyManager.cpp
     src/StatReporter.cpp
+    src/TerminalUi.cpp
     src/LocalServer.cpp
     src/BlockSubmitter.cpp
     src/AppConfig.cpp
@@ -128,6 +130,7 @@ set(SOURCE_FILES
     src/ConfigManager.cpp
     src/CudaDevice.cpp
     src/CudaBackend.cpp
+    src/CpuMiningWorker.cpp
     src/kernelrunner.cu
     src/MineUnit.cpp
     src/MiningCommon.cpp
