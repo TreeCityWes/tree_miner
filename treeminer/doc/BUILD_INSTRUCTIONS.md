@@ -9,18 +9,47 @@ This document provides instructions for building the project on both Linux and W
 
 ## Building on Linux
 
+The default build detects the CUDA architecture of the GPU visible during CMake
+configuration. For example, RTX 3060 cards resolve to `sm_86`, while RTX 50-series
+cards resolve to their Blackwell architecture. Use a fresh build directory when
+moving the source to a different GPU generation; CMake caches the detected value.
+
 Execute the following commands in your terminal:
 
 ```bash
 sudo apt install build-essential tar curl zip unzip git cmake ninja-build
-git clone https://github.com/woodysoil/XenblocksMiner.git
-cd XenblocksMiner
-git submodule init
-git submodule update
-./vcpkg/bootstrap-vcpkg.sh
-./vcpkg/vcpkg install
-cmake -S . -B build --preset ninja-multi-vcpkg
-cmake --build build --preset ninja-vcpkg-release
+git clone https://github.com/TreeCityWes/tree_miner.git
+git clone https://github.com/microsoft/vcpkg.git "$HOME/vcpkg"
+"$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+cd tree_miner/treeminer
+cmake -S . -B build-native -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/custom-triplets" \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-static
+cmake --build build-native --parallel "$(nproc)"
+ctest --test-dir build-native --output-on-failure
+```
+
+The configure output reports the concrete detected target. On a machine with
+one or more RTX 3060 cards it should read:
+
+```text
+-- TreeMiner CUDA architectures: 86
+```
+
+The generated CUDA compile command will likewise contain `compute_86` /
+`sm_86`. Mixed-generation machines include each unique detected capability.
+
+Override detection only when building for a GPU that is not installed locally:
+
+```bash
+cmake -S . -B build-sm86 -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/custom-triplets" \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-static \
+  -DCMAKE_CUDA_ARCHITECTURES=86
 ```
 
 For repeatable Hash API/CUDA benchmark runs, prefer a fresh Release CUDA preset instead of reusing an old local build directory:

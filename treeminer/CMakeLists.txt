@@ -7,6 +7,39 @@ option(XENBLOCKS_HASHAPI_STUB_BACKEND "Build hashapi-cli with a deterministic st
 option(XENBLOCKS_BUILD_HASH_DIAGNOSTICS "Build small hash diagnostic self-test tools" ON)
 
 if(XENBLOCKS_BUILD_MINER)
+    # Select the compute capabilities of GPUs visible during configuration.
+    # Explicit -DCMAKE_CUDA_ARCHITECTURES values still win for cross-builds.
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(TREEMINER_SMI_RESULT 1)
+        find_program(TREEMINER_NVIDIA_SMI nvidia-smi)
+        if(TREEMINER_NVIDIA_SMI)
+            execute_process(
+                COMMAND ${TREEMINER_NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader,nounits
+                RESULT_VARIABLE TREEMINER_SMI_RESULT
+                OUTPUT_VARIABLE TREEMINER_COMPUTE_CAPS
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+        endif()
+        if(TREEMINER_SMI_RESULT EQUAL 0 AND NOT TREEMINER_COMPUTE_CAPS STREQUAL "")
+            string(REPLACE "\r" "" TREEMINER_COMPUTE_CAPS "${TREEMINER_COMPUTE_CAPS}")
+            string(REPLACE "\n" ";" TREEMINER_COMPUTE_CAPS "${TREEMINER_COMPUTE_CAPS}")
+            set(TREEMINER_DETECTED_ARCHITECTURES "")
+            foreach(TREEMINER_CAP IN LISTS TREEMINER_COMPUTE_CAPS)
+                string(STRIP "${TREEMINER_CAP}" TREEMINER_CAP)
+                if(TREEMINER_CAP MATCHES "^([0-9]+)\\.([0-9]+)$")
+                    list(APPEND TREEMINER_DETECTED_ARCHITECTURES "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+                endif()
+            endforeach()
+            list(REMOVE_DUPLICATES TREEMINER_DETECTED_ARCHITECTURES)
+            if(TREEMINER_DETECTED_ARCHITECTURES)
+                set(CMAKE_CUDA_ARCHITECTURES "${TREEMINER_DETECTED_ARCHITECTURES}"
+                    CACHE STRING "CUDA architectures detected from nvidia-smi")
+            endif()
+        endif()
+        if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+            message(WARNING "No NVIDIA compute capability detected; pass -DCMAKE_CUDA_ARCHITECTURES explicitly")
+        endif()
+    endif()
     project(xenblocksMiner LANGUAGES CUDA CXX VERSION 1.0)
 else()
     project(xenblocksMiner LANGUAGES CXX VERSION 1.0)
@@ -22,7 +55,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 if(XENBLOCKS_BUILD_MINER)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-    set(CMAKE_CUDA_ARCHITECTURES 50 52 61 70 75 80 86 89 90 CACHE STRING "CUDA architectures")
+    message(STATUS "TreeMiner CUDA architectures: ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
 if(WIN32)

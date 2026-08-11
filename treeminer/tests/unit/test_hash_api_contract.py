@@ -410,6 +410,17 @@ def test_live_miner_cuda_stream_experiment_is_bounded_and_shares_vram():
     assert "miningThread.join()" in main
 
 
+def test_clean_cuda_build_detects_installed_gpu_architectures():
+    cmake = read("CMakeLists.txt")
+
+    assert "NOT DEFINED CMAKE_CUDA_ARCHITECTURES" in cmake
+    assert "--query-gpu=compute_cap" in cmake
+    assert "TREEMINER_DETECTED_ARCHITECTURES" in cmake
+    assert "list(REMOVE_DUPLICATES TREEMINER_DETECTED_ARCHITECTURES)" in cmake
+    assert "TreeMiner CUDA architectures" in cmake
+    assert "50 52 61 70 75 80 86 89 90" not in cmake
+
+
 def test_live_miner_cpu_sidecar_is_explicit_and_joined():
     main = read("src/main.cpp")
     worker = read("src/CpuMiningWorker.cpp")
