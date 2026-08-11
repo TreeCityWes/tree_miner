@@ -549,6 +549,17 @@ int main(int argc, const char *const *argv)
             out.permanently_invalid = counts.permanently_invalid;
             return true;
         };
+        globalSubmissionLineStatsProvider = [&manager = *submissionManager](SubmissionLineStats& out) {
+            const auto metrics = manager.metrics();
+            out.submitted = metrics.submitted;
+            out.resubmitted = metrics.resubmitted;
+            out.confirmed = metrics.acked;
+            out.accepted_unconfirmed = metrics.accepted_unconfirmed;
+            out.transport_failures = metrics.transport_failures;
+            out.pool_down = manager.outageDurationMs() > 0 ||
+                            globalDifficultyEndpointDown.load();
+            return true;
+        };
         submissionManager->start();
     }
 
@@ -730,6 +741,24 @@ int main(int argc, const char *const *argv)
             }
             if(globalXuniBlockCount > 0) {
                 stream << " | " << YELLOW << "xuni " << globalXuniBlockCount << RESET;
+            }
+            SubmissionLineStats submissionStats;
+            if (globalSubmissionLineStatsProvider &&
+                globalSubmissionLineStatsProvider(submissionStats)) {
+                stream << " | submit " << submissionStats.submitted;
+                if (submissionStats.resubmitted > 0) {
+                    stream << " (retry " << submissionStats.resubmitted << ")";
+                }
+                stream << " | confirmed " << submissionStats.confirmed;
+                if (submissionStats.accepted_unconfirmed > 0) {
+                    stream << " | unconfirmed " << submissionStats.accepted_unconfirmed;
+                }
+                if (submissionStats.transport_failures > 0) {
+                    stream << " | failures " << submissionStats.transport_failures;
+                }
+                if (submissionStats.pool_down) {
+                    stream << " | " << RED << "pool DOWN" << RESET;
+                }
             }
             stream << " | diff " << difficulty;
             std::string logMessage = stream.str();

@@ -449,7 +449,9 @@ SubmissionManager::StepResult SubmissionManager::probeStep_() {
     }
     if (r.transport_ok && r.http_status == 200 && !isBlankBody(r.body)) {
         handleDifficultyBody_(r.body);
+        const auto before = breaker_.state();
         breaker_.onProbeSuccess();  // HALF_OPEN: next step admits one real submission
+        logBreakerTransition_(before, breaker_.state(), "difficulty probe succeeded");
     } else {
         breaker_.onProbeFailure();
     }
@@ -620,6 +622,7 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
                                    isBlankBody(res.body);
     const bool accepted = c.next_status == FindStatus::Acked ||
                           c.next_status == FindStatus::AcceptedUnconfirmed;
+    const auto breaker_before_outcome = breaker_.state();
     if (accepted) {
         breaker_.onVerifySuccess();
         if (was_closed) {
@@ -639,6 +642,9 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         breaker_.onVerifyInconclusive();
         scheduler_.onHealthyRoundTrip();
     }
+    logBreakerTransition_(breaker_before_outcome, breaker_.state(),
+                          transport_failure ? "verification transport failure"
+                                            : "verification response");
 
     next_submit_allowed_ms_ = now_mono + scheduler_.submitIntervalMs();
 
@@ -662,6 +668,38 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         }
     }
     return StepResult::Submitted;
+}
+
+void SubmissionManager::logBreakerTransition_(CircuitBreaker::State before,
+                                               CircuitBreaker::State after,
+                                               const char* cause) {
+    if (before == after) {
+        return;
+    }
+
+    const IFindJournal::Counts counts = journal_.counts();
+    const std::size_t backlog = counts.pending + counts.parked +
+                                counts.accepted_unconfirmed + counts.quarantined;
+    std::ostringstream message;
+    if (after == CircuitBreaker::State::Open) {
+        const auto retry_ms = std::max<std::int64_t>(0, breaker_.nextProbeAtMs() - mono_());
+        message << "DOWN | cause=" << cause
+                << " | consecutive_failures=" << breaker_.consecutiveFailures()
+                << " | backlog=" << backlog
+                << " | next_probe_ms=" << retry_ms;
+        ConsoleLog::event(ConsoleLog::Level::Error, "POOL", message.str());
+    } else if (after == CircuitBreaker::State::HalfOpen) {
+        message << "PROBING | cause=" << cause
+                << " | backlog=" << backlog
+                << " | next=/verify trial";
+        ConsoleLog::event(ConsoleLog::Level::Warn, "POOL", message.str());
+    } else {
+        message << "RECOVERED | cause=" << cause
+                << " | outage_ms=" << outageDurationMs()
+                << " | backlog=" << backlog
+                << " | recovery_drain_per_second=" << drainRatePerSecond();
+        ConsoleLog::event(ConsoleLog::Level::Ok, "POOL", message.str());
+    }
 }
 
 SubmissionManager::StepResult SubmissionManager::confirmStep_() {

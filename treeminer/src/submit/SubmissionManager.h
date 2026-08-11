@@ -148,6 +148,9 @@ private:
                                 std::optional<long> retry_after_s) const;
     StepResult probeStep_();
     StepResult submitStep_();
+    void logBreakerTransition_(CircuitBreaker::State before,
+                               CircuitBreaker::State after,
+                               const char* cause);
     StepResult confirmStep_();
     // Tracks the outage clock and re-evaluates the headroom ramp. Called at the top of every
     // step; does real work at most once per margin_eval_interval_ms.

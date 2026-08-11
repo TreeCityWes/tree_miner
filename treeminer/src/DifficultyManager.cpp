@@ -9,12 +9,15 @@
 #include <nlohmann/json.hpp>
 #include "HttpClient.h"
 #include "MiningCommon.h"
+#include "ConsoleLog.h"
 
 std::function<void(std::uint32_t)> globalDifficultyObserver;
 
 namespace {
 
 constexpr const char* kDifficultyCacheFile = "difficulty.cache";
+constexpr int kPoolDownFailureThreshold = 3;
+int consecutiveDifficultyFailures = 0;
 
 void persistDifficulty(int difficulty)
 {
@@ -97,9 +100,44 @@ void updateDifficulty()
             globalDifficultyObserver(static_cast<std::uint32_t>(newDifficulty));
         }
         persistDifficulty(newDifficulty);
+
+        if (consecutiveDifficultyFailures > 0)
+        {
+            const int failures = consecutiveDifficultyFailures;
+            consecutiveDifficultyFailures = 0;
+            if (globalDifficultyEndpointDown.exchange(false))
+            {
+                ConsoleLog::event(ConsoleLog::Level::Ok, "POOL",
+                                  "RECOVERED | endpoint=/difficulty | prior_failures=" +
+                                      std::to_string(failures) +
+                                      " | difficulty=" + std::to_string(newDifficulty));
+            }
+            else
+            {
+                ConsoleLog::event(ConsoleLog::Level::Info, "POOL",
+                                  "difficulty poll restored | prior_failures=" +
+                                      std::to_string(failures));
+            }
+        }
     }
     catch (const std::exception &e)
     {
+        ++consecutiveDifficultyFailures;
+        if (consecutiveDifficultyFailures == 1)
+        {
+            ConsoleLog::event(ConsoleLog::Level::Warn, "POOL",
+                              "difficulty poll failed | failure=1/" +
+                                  std::to_string(kPoolDownFailureThreshold) +
+                                  " | " + e.what());
+        }
+        if (consecutiveDifficultyFailures == kPoolDownFailureThreshold)
+        {
+            globalDifficultyEndpointDown.store(true);
+            ConsoleLog::event(ConsoleLog::Level::Error, "POOL",
+                              "DOWN | endpoint=/difficulty | consecutive_failures=" +
+                                  std::to_string(consecutiveDifficultyFailures) +
+                                  " | polling continues every 10s | " + e.what());
+        }
     }
 }
 

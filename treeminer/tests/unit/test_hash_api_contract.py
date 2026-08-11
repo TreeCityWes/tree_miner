@@ -120,6 +120,35 @@ def test_cuda_release_benchmark_presets_exist():
     assert "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8" in cmake
 
 
+def test_terminal_status_reports_submission_outcomes_without_journal_io():
+    common = read("src/MiningCommon.h")
+    main = read("src/main.cpp")
+
+    assert "struct SubmissionLineStats" in common
+    assert "globalSubmissionLineStatsProvider" in common
+    for field in [
+        "metrics.submitted",
+        "metrics.resubmitted",
+        "metrics.acked",
+        "metrics.accepted_unconfirmed",
+        "metrics.transport_failures",
+        'stream << " | submit "',
+        'stream << " | confirmed "',
+        '"pool DOWN"',
+    ]:
+        assert field in main
+
+    manager = read("src/submit/SubmissionManager.cpp")
+    for transition in ["DOWN | cause=", "PROBING | cause=", "RECOVERED | cause="]:
+        assert transition in manager
+
+    difficulty = read("src/DifficultyManager.cpp")
+    assert "kPoolDownFailureThreshold = 3" in difficulty
+    assert '"DOWN | endpoint=/difficulty' in difficulty
+    assert '"RECOVERED | endpoint=/difficulty' in difficulty
+    assert "globalDifficultyEndpointDown" in difficulty
+
+
 def test_hash_api_json_uses_standard_library_only():
     content = read("src/hashapi/HashApiJson.h")
     assert "nlohmann/json.hpp" not in content

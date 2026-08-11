@@ -4,6 +4,7 @@
 
 std::atomic<bool> running = true;
 std::atomic<int> globalDifficulty = 1727;
+std::atomic<bool> globalDifficultyEndpointDown = false;
 std::atomic<int> globalDifficultyMargin = 0;
 std::mutex mtx;
 
@@ -30,6 +31,7 @@ std::atomic<int> globalDevfeePermillage = 1; // per 1000
 std::string machineId = "00000";
 
 std::function<bool(TreeminerStats&)> globalTreeminerStatsProvider;
+std::function<bool(SubmissionLineStats&)> globalSubmissionLineStatsProvider;
 
 std::map<int, std::pair<gpuInfo, std::chrono::steady_clock::time_point>> globalGpuInfos;
 std::mutex globalGpuInfosMutex;

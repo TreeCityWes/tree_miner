@@ -40,6 +40,9 @@ extern std::atomic<int> globalDevfeePermillage; // per 1000
 extern std::string machineId;
 
 extern std::atomic<int> globalDifficulty;
+// True after repeated /difficulty failures; lets the terminal report an outage even when
+// no find is currently eligible for the submission circuit breaker.
+extern std::atomic<bool> globalDifficultyEndpointDown;
 
 // Headroom in KiB baked into newly mined hashes on top of globalDifficulty (PLAN §5, §10.7).
 // Published by the SubmissionManager's margin policy; 0 unless an operator enables it.
@@ -100,6 +103,19 @@ struct TreeminerStats {
 // Set by main() once the journal and submitter exist; empty until then (the stats endpoint
 // starts before mining does). Returns false when the submission layer is not running.
 extern std::function<bool(TreeminerStats&)> globalTreeminerStatsProvider;
+
+// Lightweight, in-memory counters for the live terminal status line. Unlike the web
+// snapshot above, this deliberately never queries the durable journal: the mining callback
+// can refresh it frequently without introducing disk I/O into the batch-completion path.
+struct SubmissionLineStats {
+	std::uint64_t submitted = 0;
+	std::uint64_t resubmitted = 0;
+	std::uint64_t confirmed = 0;
+	std::uint64_t accepted_unconfirmed = 0;
+	std::uint64_t transport_failures = 0;
+	bool pool_down = false;
+};
+extern std::function<bool(SubmissionLineStats&)> globalSubmissionLineStatsProvider;
 
 using SubmitCallback = std::function<void(const std::string& hexsalt, const std::string& key, const std::string& hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate)>;
 using StatCallback = std::function<void(const gpuInfo gpuinfo)>;
