@@ -1,14 +1,21 @@
 #include "LocalServer.h"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <mutex>
+#include <sstream>
+#include <vector>
 
 #include <nlohmann/json.hpp>
 #ifdef _WIN32
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #else
 #include <arpa/inet.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -93,6 +100,11 @@ std::string buildStatsSnapshot() {
     }
 
     result["stats_cache_seconds"] = 2;
+    result["console"] = {
+        {"bind", globalDashboardBind},
+        {"open", getConsoleUrl(globalDashboardBind)},
+        {"urls", dashboardAdvertisedAddresses(globalDashboardBind)}
+    };
     return result.dump();
 }
 
@@ -119,42 +131,144 @@ bool isValidDashboardBind(const std::string& address) {
            inet_pton(AF_INET6, address.c_str(), &ipv6) == 1;
 }
 
-std::string getConsoleUrl(const std::string& bind_address) {
-    std::string address = bind_address;
-    if (bind_address == "0.0.0.0") {
-        address = "127.0.0.1";
-#ifndef _WIN32
-        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
-        if (fd >= 0) {
-            sockaddr_in destination{};
-            destination.sin_family = AF_INET;
-            destination.sin_port = htons(53);
-            inet_pton(AF_INET, "1.1.1.1", &destination.sin_addr);
-            if (connect(fd, reinterpret_cast<sockaddr*>(&destination), sizeof(destination)) == 0) {
-                sockaddr_in local{};
-                socklen_t length = sizeof(local);
-                if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &length) == 0) {
-                    char buffer[INET_ADDRSTRLEN]{};
-                    if (inet_ntop(AF_INET, &local.sin_addr, buffer, sizeof(buffer))) {
-                        address = buffer;
-                    }
+bool isLoopbackDashboardBind(const std::string& address) {
+    return address == "127.0.0.1" || address == "::1";
+}
+
+namespace {
+
+bool isUnusableAdvertisedHost(const std::string& host) {
+    if (host.empty() || host == "0.0.0.0" || host == "::" ||
+        host == "127.0.0.1" || host == "::1") {
+        return true;
+    }
+    if (host.rfind("169.254.", 0) == 0) return true;          // IPv4 link-local
+    if (host.rfind("fe80:", 0) == 0 || host.rfind("FE80:", 0) == 0) return true;
+    return false;
+}
+
+void appendUniqueHost(std::vector<std::string>& hosts, const std::string& host) {
+    if (isUnusableAdvertisedHost(host)) return;
+    if (std::find(hosts.begin(), hosts.end(), host) != hosts.end()) return;
+    hosts.push_back(host);
+}
+
+void collectInterfaceAddresses(std::vector<std::string>& ipv4, std::vector<std::string>& ipv6) {
+#ifdef _WIN32
+    ULONG flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    ULONG size = 16 * 1024;
+    std::vector<unsigned char> buffer(size);
+    auto* adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+    const ULONG error = GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, adapters, &size);
+    if (error == ERROR_BUFFER_OVERFLOW) {
+        buffer.resize(size);
+        adapters = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+        if (GetAdaptersAddresses(AF_UNSPEC, flags, nullptr, adapters, &size) != NO_ERROR) {
+            return;
+        }
+    } else if (error != NO_ERROR) {
+        return;
+    }
+    for (auto* adapter = adapters; adapter != nullptr; adapter = adapter->Next) {
+        if (adapter->OperStatus != IfOperStatusUp) continue;
+        if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK) continue;
+        for (auto* unicast = adapter->FirstUnicastAddress; unicast != nullptr;
+             unicast = unicast->Next) {
+            if (unicast->Address.lpSockaddr == nullptr) continue;
+            const int family = unicast->Address.lpSockaddr->sa_family;
+            char text[INET6_ADDRSTRLEN]{};
+            if (family == AF_INET) {
+                const auto* addr = reinterpret_cast<sockaddr_in*>(unicast->Address.lpSockaddr);
+                if (inet_ntop(AF_INET, &addr->sin_addr, text, sizeof(text))) {
+                    appendUniqueHost(ipv4, text);
+                }
+            } else if (family == AF_INET6) {
+                const auto* addr = reinterpret_cast<sockaddr_in6*>(unicast->Address.lpSockaddr);
+                if (inet_ntop(AF_INET6, &addr->sin6_addr, text, sizeof(text))) {
+                    appendUniqueHost(ipv6, text);
                 }
             }
-            close(fd);
         }
+    }
+#else
+    ifaddrs* interfaces = nullptr;
+    if (getifaddrs(&interfaces) != 0 || interfaces == nullptr) return;
+    for (ifaddrs* iface = interfaces; iface != nullptr; iface = iface->ifa_next) {
+        if (iface->ifa_addr == nullptr) continue;
+        if ((iface->ifa_flags & IFF_UP) == 0) continue;
+        if ((iface->ifa_flags & IFF_LOOPBACK) != 0) continue;
+        char text[INET6_ADDRSTRLEN]{};
+        if (iface->ifa_addr->sa_family == AF_INET) {
+            const auto* addr = reinterpret_cast<sockaddr_in*>(iface->ifa_addr);
+            if (inet_ntop(AF_INET, &addr->sin_addr, text, sizeof(text))) {
+                appendUniqueHost(ipv4, text);
+            }
+        } else if (iface->ifa_addr->sa_family == AF_INET6) {
+            const auto* addr = reinterpret_cast<sockaddr_in6*>(iface->ifa_addr);
+            if (inet_ntop(AF_INET6, &addr->sin6_addr, text, sizeof(text))) {
+                appendUniqueHost(ipv6, text);
+            }
+        }
+    }
+    freeifaddrs(interfaces);
 #endif
-    } else if (bind_address == "::") {
-        // The wildcard address is not a usable browser destination. Loopback is
-        // always valid for a listener accepting connections on every IPv6 interface.
-        address = "::1";
+}
+
+} // namespace
+
+std::string formatDashboardUrl(const std::string& host) {
+    const bool ipv6 = host.find(':') != std::string::npos;
+    return "http://" + (ipv6 ? "[" + host + "]" : host) + ":" +
+           std::to_string(globalDashboardPort);
+}
+
+std::vector<std::string> dashboardAdvertisedAddresses(const std::string& bind_address) {
+    if (bind_address != "0.0.0.0" && bind_address != "::") {
+        if (!isUnusableAdvertisedHost(bind_address)) return {bind_address};
+        if (isLoopbackDashboardBind(bind_address)) return {bind_address};
+        return {};
     }
 
-    const bool ipv6 = address.find(':') != std::string::npos;
-    return "http://" + (ipv6 ? "[" + address + "]" : address) + ":42069";
+    std::vector<std::string> ipv4;
+    std::vector<std::string> ipv6;
+    collectInterfaceAddresses(ipv4, ipv6);
+
+    std::vector<std::string> hosts = ipv4;
+    hosts.insert(hosts.end(), ipv6.begin(), ipv6.end());
+    if (hosts.empty()) {
+        hosts.push_back(bind_address == "::" ? "::1" : "127.0.0.1");
+    }
+    return hosts;
+}
+
+std::string getConsoleUrl(const std::string& bind_address) {
+    const auto hosts = dashboardAdvertisedAddresses(bind_address);
+    return formatDashboardUrl(hosts.empty() ? "127.0.0.1" : hosts.front());
+}
+
+std::string dashboardReadyMessage(const std::string& bind_address) {
+    const auto hosts = dashboardAdvertisedAddresses(bind_address);
+    std::ostringstream message;
+    if (isLoopbackDashboardBind(bind_address)) {
+        message << "Dashboard ready — open " << formatDashboardUrl(bind_address)
+                << " (this machine only)\n";
+        return message.str();
+    }
+    if (bind_address == "0.0.0.0" || bind_address == "::") {
+        message << "Dashboard listening on all interfaces, port "
+                << globalDashboardPort << "\n";
+    } else {
+        message << "Dashboard listening on " << bind_address << ":"
+                << globalDashboardPort << "\n";
+    }
+    for (const auto& host : hosts) {
+        message << "  open  " << formatDashboardUrl(host) << "\n";
+    }
+    return message.str();
 }
 
 void startServer(const std::string& bind_address) {
-    s_app.bindaddr(bind_address).port(42069).multithreaded().run();
+    s_app.bindaddr(bind_address).port(globalDashboardPort).multithreaded().run();
 }
 
 void setupRoutes(treeminer::IFindJournal* journal,
@@ -163,6 +277,14 @@ void setupRoutes(treeminer::IFindJournal* journal,
     s_submission_manager = submission_manager;
     s_app.loglevel(crow::LogLevel::Warning);
     s_app.signal_clear();
+
+    CROW_ROUTE(s_app, "/healthz")
+    ([](){
+        crow::response response(R"({"ok":true})");
+        response.set_header("Content-Type", "application/json");
+        response.set_header("Cache-Control", "no-store");
+        return response;
+    });
 
     CROW_ROUTE(s_app, "/stats")
     ([](){

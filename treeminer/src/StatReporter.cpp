@@ -9,6 +9,7 @@
 #include <set>
 #include <nvml.h>
 #include "HttpClient.h"
+#include "LocalServer.h"
 
 extern std::string globalCustomName;
 
@@ -230,6 +231,11 @@ nlohmann::json getMinerDashboardData() {
         {"queued_xnm", globalQueuedXnm.load()},
         {"queued_xuni", globalQueuedXuni.load()},
         {"queued_total", globalQueuedXnm.load() + globalQueuedXuni.load()}
+    };
+    result["console"] = {
+        {"bind", globalDashboardBind},
+        {"open", getConsoleUrl(globalDashboardBind)},
+        {"urls", dashboardAdvertisedAddresses(globalDashboardBind)}
     };
     result["gpus"] = std::move(gpuArray);
     return result;

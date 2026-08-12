@@ -159,6 +159,9 @@ public:
     std::uint32_t marginInEffect() const { return margin_kib_.load(); }
     // Milliseconds the /verify path has been OPEN, or 0 when it is not. Any thread.
     std::int64_t outageDurationMs() const;
+    // Span of the most recent Open period. Survives HalfOpen/Closed so the glance line
+    // and RECOVERED log can still say how long the pool was down.
+    std::int64_t lastOutageSpanMs() const { return last_outage_span_ms_.load(); }
 
     // --- server clock (PLAN §10.5; SOL §7) ---
     // Offset = server wall clock - local wall clock, from HTTP Date headers. Unknown

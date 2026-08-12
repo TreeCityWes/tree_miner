@@ -21,6 +21,7 @@ benchmark-results/
 # Local miner state and private configuration
 config.txt
 difficulty.cache
+dashboard.url
 miner-runtime.log
 treeminer-journal.db*
 .env

@@ -23,6 +23,18 @@
             }
         },
         {
+            "name": "cuda-release-linux-fat",
+            "displayName": "CUDA Release fat binary (Linux)",
+            "description": "Native SASS for Turing through Blackwell GeForce (sm_75..sm_120). Requires CUDA 12.8+.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-cuda-linux-fat",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "XENBLOCKS_BUILD_MINER": "ON",
+                "CMAKE_CUDA_ARCHITECTURES": "75-real;80-real;86-real;87-real;89-real;90-real;120"
+            }
+        },
+        {
             "name": "cuda-release-vcpkg-sm75",
             "displayName": "CUDA Release for sm_75",
             "description": "Release full-miner build for Turing-class CUDA GPUs.",

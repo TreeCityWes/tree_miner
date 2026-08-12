@@ -115,6 +115,9 @@ extern std::atomic<LastSubmissionState> globalLastSubmission;
 extern std::atomic<treeminer::CircuitBreaker::State> globalNetworkState;
 extern std::atomic<std::size_t> globalCpuWorkers;
 extern std::atomic<double> globalCpuHashrate;
+// The listen address (often 0.0.0.0). Advertised URLs use interface IPs, never this wildcard.
+extern std::string globalDashboardBind;
+extern int globalDashboardPort;
 
 const char* submissionStateLabel(LastSubmissionState state);
 const char* networkStateLabel(treeminer::CircuitBreaker::State state);
@@ -166,6 +169,10 @@ struct SubmissionLineStats {
 	std::uint64_t accepted_unconfirmed = 0;
 	std::uint64_t transport_failures = 0;
 	bool pool_down = false;
+	bool breaker_open = false;
+	bool breaker_half_open = false;
+	long long outage_ms = 0;
+	int margin_kib = 0;
 };
 extern std::function<bool(SubmissionLineStats&)> globalSubmissionLineStatsProvider;
 

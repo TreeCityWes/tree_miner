@@ -139,6 +139,8 @@ std::atomic<treeminer::CircuitBreaker::State> globalNetworkState{
 	treeminer::CircuitBreaker::State::Closed};
 std::atomic<std::size_t> globalCpuWorkers{0};
 std::atomic<double> globalCpuHashrate{0.0};
+std::string globalDashboardBind = "0.0.0.0";
+int globalDashboardPort = 42069;
 
 const char* submissionStateLabel(LastSubmissionState state)
 {

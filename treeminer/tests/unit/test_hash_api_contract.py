@@ -134,18 +134,23 @@ def test_terminal_status_reports_submission_outcomes_without_journal_io():
         "metrics.transport_failures",
         '<< " confirmed"',
         '<< " queued"',
+        '<< " confirming"',
+        'YELLOW << "net PROBE"',
     ]:
         assert field in main
     assert '" | net "' not in main
     # An outage must stay visible at a glance on the live line (regression guard: a prior
     # humanized rewrite dropped this, hiding pool-down behind a silently growing queue).
     assert 'RED << "pool DOWN"' in main
+    # Half-open must not hide behind outageDurationMs()==0.
+    assert "breaker_half_open" in main
+    assert "lastOutageSpanMs()" in main
     assert "ConsoleLog::progress(stream.str())" in main
     assert 'Logger::logToConsole("\\033[2K\\r" + message.str()' not in main
 
     manager = read("src/submit/SubmissionManager.cpp")
     # Breaker transitions stay human-readable AND carry the recovery detail operators need.
-    for transition in ["submissions paused", "submissions restored after"]:
+    for transition in ["submissions paused", "submissions restored after", "submissions probing"]:
         assert transition in manager
     assert "outageDurationMs()" in manager  # "how long was the pool down" must survive
     # RECOVERED must read the LATCHED span, not the live clock (updateMargin_ zeroes the
@@ -449,6 +454,8 @@ def test_mine_unit_uses_hash_api_batch_size_tuning_without_overriding_manual_lim
     assert "constexpr bool kGpuFirstBlocksEnabled = false" in types
     assert "runCpuCudaSelfTest" in main
     assert "Mining was not started" in main
+    assert "GPU-first-blocks probe" in main
+    assert "skipping this device" in main
     assert implementation.index("backend_.releaseBuffers()") < implementation.index("backend_.getFreeMemory()")
 
 

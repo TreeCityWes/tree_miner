@@ -227,7 +227,7 @@ inline constexpr std::string_view kPage = R"HTML(<!doctype html>
       <div>
         <div class="eyebrow"><span class="index">[01]</span> :: ACTIVE_RIG</div>
         <h1 id="rig-name">TREE<span>MINER</span></h1>
-        <div class="hero-meta"><span id="address">0x...</span> // <span id="machine">waiting for telemetry</span></div>
+        <div class="hero-meta"><span id="address">0x...</span> // <span id="machine">waiting for telemetry</span> // <span id="console-url">waiting for console url</span></div>
       </div>
       <div>
         <div class="rate-label">Combined throughput</div>
@@ -293,6 +293,7 @@ inline constexpr std::string_view kPage = R"HTML(<!doctype html>
         <div class="profile-item"><div class="profile-key">Machine ID</div><div id="profile-machine" class="profile-value">--</div></div>
         <div class="profile-item"><div class="profile-key">GPU plan</div><div id="profile-gpu" class="profile-value">--</div></div>
         <div class="profile-item"><div class="profile-key">CPU plan</div><div id="profile-cpu" class="profile-value">--</div></div>
+        <div class="profile-item"><div class="profile-key">Open at</div><div id="profile-console" class="profile-value">--</div></div>
       </div>
     </section>
   </main>
@@ -396,6 +397,9 @@ inline constexpr std::string_view kPage = R"HTML(<!doctype html>
       text('profile-address', identity.address); text('profile-machine', identity.machine_id);
       text('profile-gpu', `${engine.gpu_devices} GPU // ${engine.cuda_streams} streams`);
       text('profile-cpu', engine.cpu_workers ? `${engine.cpu_workers} workers // ${kh(engine.cpu_hashrate)} kH/s` : 'disabled');
+      const consoleUrl = (data.console && data.console.open) || '';
+      text('console-url', consoleUrl || 'waiting for console url');
+      text('profile-console', consoleUrl || '--');
       text('network-label', `network ${delivery.network}`);
       $('network-dot').className = `dot ${delivery.network}`;
       const offline = delivery.network !== 'online';

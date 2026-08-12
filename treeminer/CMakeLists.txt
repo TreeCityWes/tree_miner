@@ -81,14 +81,28 @@ if(XENBLOCKS_BUILD_MINER)
         set(CMAKE_CUDA_ARCHITECTURES "${_xenblocks_cuda_architectures}" CACHE STRING "CUDA architectures" FORCE)
     endif()
 
+    set(_xenblocks_adjusted_architectures "")
     foreach(_xenblocks_cuda_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
         if(_xenblocks_cuda_arch MATCHES "^120(-real|-virtual)?$" AND
            CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
-            message(FATAL_ERROR
-                "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8 or newer; "
-                "detected CUDA ${CMAKE_CUDA_COMPILER_VERSION}.")
+            if(XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT)
+                message(FATAL_ERROR
+                    "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8 or newer; "
+                    "detected CUDA ${CMAKE_CUDA_COMPILER_VERSION}.")
+            endif()
+            message(WARNING
+                "nvidia-smi reported sm_120 but toolkit ${CMAKE_CUDA_COMPILER_VERSION} "
+                "cannot emit Blackwell SASS; falling back to sm_90 PTX")
+            list(APPEND _xenblocks_adjusted_architectures "90")
+        else()
+            list(APPEND _xenblocks_adjusted_architectures "${_xenblocks_cuda_arch}")
         endif()
     endforeach()
+    if(_xenblocks_adjusted_architectures)
+        list(REMOVE_DUPLICATES _xenblocks_adjusted_architectures)
+        set(CMAKE_CUDA_ARCHITECTURES "${_xenblocks_adjusted_architectures}"
+            CACHE STRING "CUDA architectures" FORCE)
+    endif()
     message(STATUS "TreeMiner CUDA architectures (toolkit ${CMAKE_CUDA_COMPILER_VERSION}): ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 

@@ -15,7 +15,7 @@ jobs:
       - uses: Jimver/cuda-toolkit@v0.2.30
         id: cuda-toolkit
         with:
-          cuda: '12.6.3'
+          cuda: '12.8.0'
           method: network
           sub-packages: '["nvcc", "cudart", "nvml_dev", "visual_studio_integration"]'
           use-github-cache: true
@@ -66,7 +66,8 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-windows-static `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_CUDA_COMPILER="$env:CUDA_PATH/bin/nvcc.exe" `
-            -DCUDAToolkit_ROOT="$env:CUDA_PATH"
+            -DCUDAToolkit_ROOT="$env:CUDA_PATH" `
+            -DCMAKE_CUDA_ARCHITECTURES="75-real;86-real;89-real;120"
           if ($LASTEXITCODE -ne 0) {
             Write-Host "=== CMakeError.log ==="
             Get-ChildItem -Recurse -Filter "CMakeError.log" -ErrorAction SilentlyContinue | ForEach-Object {

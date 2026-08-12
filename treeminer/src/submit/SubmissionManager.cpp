@@ -882,7 +882,10 @@ void SubmissionManager::logBreakerTransition_(CircuitBreaker::State before,
                 << (retry_ms / 1000) << "s";
         ConsoleLog::event(ConsoleLog::Level::Warn, "NETWORK", message.str());
     } else if (after == CircuitBreaker::State::HalfOpen) {
-        return;
+        message << "submissions probing (" << cause << ") — " << backlog
+                << " find" << (backlog == 1 ? "" : "s")
+                << " still queued; one test submit next";
+        ConsoleLog::event(ConsoleLog::Level::Warn, "NETWORK", message.str());
     } else {
         // Outage duration is the headline recovery metric — "how long were we down" — and
         // is otherwise unrecoverable once the breaker closes. Read the latched span, not the
@@ -921,6 +924,7 @@ SubmissionManager::StepResult SubmissionManager::confirmStep_() {
             c.next_status = FindStatus::Acked;
             c.reason = "confirmed via /get_block (retry, body matches key)";
             std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.acked;
             ++metrics_.reconciled_via_get_block;
         } else if (conf.transport_ok && conf.http_status == 200) {
             // Same rule as the initial confirmation (finding 4): an unproven 200 keeps

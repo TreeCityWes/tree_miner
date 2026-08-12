@@ -8,18 +8,30 @@ def test_local_dashboard_is_read_only_and_has_an_explicit_bind():
     server = (ROOT / "src" / "LocalServer.cpp").read_text()
 
     assert "s_app.bindaddr(bind_address)" in server
-    assert 'std::string dashboardBind = "127.0.0.1"' in (ROOT / "src" / "main.cpp").read_text()
+    assert 'std::string dashboardBind = "0.0.0.0"' in (ROOT / "src" / "main.cpp").read_text()
     assert 'CROW_ROUTE(s_app, "/")' in server
     assert 'CROW_ROUTE(s_app, "/api/rig")' in server
     assert 'CROW_ROUTE(s_app, "/assets/hashfield.webp")' in server
+    assert 'CROW_ROUTE(s_app, "/healthz")' in server
     assert "CROW_ROUTE(s_app, \"/api/rig\").methods" not in server
     assert "getConsoleUrl" in server
+    assert "dashboardAdvertisedAddresses" in server
+    assert "dashboardReadyMessage" in server
+    assert 'dashboard.url' in (ROOT / "src" / "main.cpp").read_text()
+    assert "getifaddrs" in server or "GetAdaptersAddresses" in server
+    assert "isUnusableAdvertisedHost" in server
+    assert 'host == "0.0.0.0"' in server
+    assert "dashboardBindRequiresToken" not in server
+    assert "setDashboardAuthToken" not in server
+    assert "X-Dashboard-Token" not in server
 
     main = (ROOT / "src" / "main.cpp").read_text()
     assert '("dashboard-bind", po::value<std::string>()' in main
+    assert '("dashboard-port", po::value<int>()' in main
+    assert '("dashboard-token"' not in main
     assert 'configuredValue("dashboard_bind")' in main
     assert "isValidDashboardBind(dashboardBind)" in main
-    assert '"Local console: " + getConsoleUrl(dashboardBind)' in main
+    assert "dashboardReadyMessage(dashboardBind)" in main
     assert 'std::thread serverThread(startServer, dashboardBind)' in main
 
 
@@ -30,7 +42,8 @@ def test_dashboard_bind_validation_uses_ip_literals_and_formats_ipv6_urls():
     assert "inet_pton(AF_INET6, address.c_str(), &ipv6)" in server
     assert 'bind_address == "0.0.0.0"' in server
     assert 'bind_address == "::"' in server
-    assert 'ipv6 ? "[" + address + "]" : address' in server
+    assert "formatDashboardUrl" in server
+    assert 'ipv6 ? "[" + host + "]" : host' in server
 
 
 def test_dashboard_exposes_operator_language_and_live_fields():
@@ -45,6 +58,8 @@ def test_dashboard_exposes_operator_language_and_live_fields():
     assert "getMinerDashboardData" in reporter
     assert 'result["delivery"]' in reporter
     assert 'result["gpus"]' in reporter
+    assert 'result["console"]' in reporter
+    assert "getConsoleUrl(globalDashboardBind)" in reporter
 
 
 def test_terminal_presentation_mode_is_explicit_and_animated():

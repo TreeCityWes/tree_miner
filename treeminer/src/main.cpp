@@ -177,9 +177,8 @@ int main(int argc, const char *const *argv)
     // idle and auto-resume when difficulty falls back (see CpuMiningWorker::Config).
     std::uint32_t cpuMaxDifficulty = 100;
     std::string displayMode = "logs";
-    // Reachable on the LAN by default so the operator can open the dashboard from
-    // another device (phone/laptop) by browsing to this rig's IP. All dashboard
-    // routes are read-only stats; set --dashboard-bind 127.0.0.1 to keep it private.
+    // Reachable on LAN / Vast.ai / Docker by default. Stats are operator telemetry,
+    // not secrets — map port 42069 and open the printed URL. Use 127.0.0.1 to hide it.
     std::string dashboardBind = "0.0.0.0";
 
     for (int i = 1; i < argc; ++i) {
@@ -224,7 +223,8 @@ int main(int argc, const char *const *argv)
             ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
             ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
             ("cpuMaxDifficulty", po::value<int>(), "CPU workers hash only while difficulty <= this ceiling; they idle above it and resume when it falls (default 100; 0 = no ceiling)")
-            ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 0.0.0.0 = reachable on your LAN; set 127.0.0.1 to restrict to this machine)")
+            ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 0.0.0.0 for Vast.ai/Docker/LAN; 127.0.0.1 for this machine only)")
+            ("dashboard-port", po::value<int>(), "dashboard listen port (default 42069; use 8080 if the host firewall already allows the old xen.pub API port)")
             ("display", po::value<std::string>(), "terminal display: logs, terminal, or prompt");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -237,6 +237,14 @@ int main(int argc, const char *const *argv)
 
         if (vm.count("dashboard-bind")) {
             dashboardBind = vm["dashboard-bind"].as<std::string>();
+        }
+        if (vm.count("dashboard-port")) {
+            const int port = vm["dashboard-port"].as<int>();
+            if (port < 1 || port > 65535) {
+                std::cerr << "Invalid dashboard port '" << port << "'.\n";
+                return -1;
+            }
+            globalDashboardPort = port;
         }
 
         if (vm.count("display")) {
@@ -349,12 +357,22 @@ int main(int argc, const char *const *argv)
                 }
             }
 
-            // Dashboard is LAN-reachable by default; config.txt can override the bind
+            // Dashboard is LAN/cloud-reachable by default; config.txt can override the bind
             // (e.g. to 127.0.0.1 for a private console). Command line wins over config.
             if (!vm.count("dashboard-bind")) {
                 const std::string configuredBind = configuredValue("dashboard_bind");
                 if (!configuredBind.empty()) {
                     dashboardBind = configuredBind;
+                }
+            }
+            if (!vm.count("dashboard-port")) {
+                const std::string configuredPort = configuredValue("dashboard_port");
+                if (!configuredPort.empty()) {
+                    try {
+                        const int port = std::stoi(configuredPort);
+                        if (port >= 1 && port <= 65535) globalDashboardPort = port;
+                    } catch (...) {
+                    }
                 }
             }
         }
@@ -364,7 +382,7 @@ int main(int argc, const char *const *argv)
                       << "': expected an IPv4 or IPv6 address.\n";
             return -1;
         }
-
+        globalDashboardBind = dashboardBind;
         if (vm.count("cudaStreams")) {
             const int requestedStreams = vm["cudaStreams"].as<int>();
             if (requestedStreams < 1 || requestedStreams > 2) {
@@ -545,23 +563,51 @@ int main(int argc, const char *const *argv)
     // happens to contain XEN11 and would otherwise look like a valuable find.
     try {
         hashapi::CpuHashBackend cpuReference;
+        std::set<int> miningDevices;
         for (const int deviceIndex : usedDevices) {
-            CudaBackend selfTestDevice(deviceIndex);
-            hashapi::CudaHashBackend cudaCandidate(selfTestDevice);
-            const hashapi::HashApiSelfTestResult selfTest = hashapi::runCpuCudaSelfTest(
-                cpuReference,
-                cudaCandidate,
-                deviceIndex,
-                hashapi::kGpuFirstBlocksEnabled);
-            if (!selfTest.ok) {
-                std::cerr << "FATAL: GPU #" << deviceIndex
-                          << " failed startup Argon2 CPU/CUDA self-test: " << selfTest.error
-                          << ". Mining was not started." << std::endl;
-                return EXIT_FAILURE;
+            try {
+                CudaBackend selfTestDevice(deviceIndex);
+                hashapi::CudaHashBackend cudaCandidate(selfTestDevice);
+                const hashapi::HashApiSelfTestResult selfTest = hashapi::runCpuCudaSelfTest(
+                    cpuReference,
+                    cudaCandidate,
+                    deviceIndex,
+                    hashapi::kGpuFirstBlocksEnabled);
+                if (!selfTest.ok) {
+                    std::cerr << "WARN: GPU #" << deviceIndex
+                              << " failed startup Argon2 CPU/CUDA self-test: " << selfTest.error
+                              << " — skipping this device." << std::endl;
+                    continue;
+                }
+                std::cout << "GPU #" << deviceIndex
+                          << " Argon2 CPU/CUDA self-test passed." << std::endl;
+                if (!hashapi::kGpuFirstBlocksEnabled) {
+                    const hashapi::HashApiSelfTestResult firstBlocks =
+                        hashapi::runCpuCudaSelfTest(cpuReference, cudaCandidate, deviceIndex, true);
+                    if (!firstBlocks.ok) {
+                        std::cout << "GPU #" << deviceIndex
+                                  << " GPU-first-blocks probe still mismatches ("
+                                  << firstBlocks.error
+                                  << "); mining stays on CPU first-blocks." << std::endl;
+                    } else {
+                        std::cout << "GPU #" << deviceIndex
+                                  << " GPU-first-blocks probe matched the CPU reference."
+                                  << std::endl;
+                    }
+                }
+                miningDevices.insert(deviceIndex);
+            } catch (const std::exception& deviceError) {
+                std::cerr << "WARN: GPU #" << deviceIndex
+                          << " could not run the startup self-test (" << deviceError.what()
+                          << ") — skipping this device." << std::endl;
             }
-            std::cout << "GPU #" << deviceIndex
-                      << " Argon2 CPU/CUDA self-test passed." << std::endl;
         }
+        if (miningDevices.empty()) {
+            std::cerr << "FATAL: no GPU passed the startup Argon2 CPU/CUDA self-test. "
+                      << "Mining was not started." << std::endl;
+            return EXIT_FAILURE;
+        }
+        usedDevices.swap(miningDevices);
     } catch (const std::exception& e) {
         std::cerr << "FATAL: startup Argon2 CPU/CUDA self-test could not run: "
                   << e.what() << ". Mining was not started." << std::endl;
@@ -756,13 +802,21 @@ int main(int argc, const char *const *argv)
         };
         globalSubmissionLineStatsProvider = [&manager = *submissionManager](SubmissionLineStats& out) {
             const auto metrics = manager.metrics();
+            const auto breaker = manager.breakerState();
             out.submitted = metrics.submitted;
             out.resubmitted = metrics.resubmitted;
             out.confirmed = metrics.acked;
             out.accepted_unconfirmed = metrics.accepted_unconfirmed;
             out.transport_failures = metrics.transport_failures;
-            out.pool_down = manager.outageDurationMs() > 0 ||
-                            globalDifficultyEndpointDown.load();
+            out.breaker_open = breaker == treeminer::CircuitBreaker::State::Open;
+            out.breaker_half_open = breaker == treeminer::CircuitBreaker::State::HalfOpen;
+            // Glance "pool DOWN" is the breaker (or the /difficulty poller), not the
+            // live outage clock — that clock is zero in HalfOpen and would hide a probe.
+            out.pool_down = out.breaker_open || globalDifficultyEndpointDown.load();
+            out.outage_ms = manager.outageDurationMs() > 0
+                                ? manager.outageDurationMs()
+                                : manager.lastOutageSpanMs();
+            out.margin_kib = static_cast<int>(manager.marginInEffect());
             return true;
         };
         submissionManager->start();
@@ -1031,20 +1085,30 @@ int main(int argc, const char *const *argv)
             SubmissionLineStats submissionStats;
             if (globalSubmissionLineStatsProvider &&
                 globalSubmissionLineStatsProvider(submissionStats)) {
+                if (submissionStats.accepted_unconfirmed > 0) {
+                    stream << "  •  " << submissionStats.accepted_unconfirmed << " confirming";
+                }
                 if (submissionStats.confirmed > 0) {
                     stream << "  •  " << submissionStats.confirmed << " confirmed";
                 }
-                if (submissionStats.accepted_unconfirmed > 0) {
-                    stream << "  •  " << submissionStats.accepted_unconfirmed << " unconfirmed";
-                }
-                // The one indicator that must never disappear on this line: an outage means
-                // finds are piling up in the journal, not being lost — but the operator has
-                // to be able to SEE that at a glance.
-                if (submissionStats.pool_down) {
+                // Breaker state, not the live outage clock: HalfOpen must stay visible.
+                if (submissionStats.breaker_half_open) {
+                    stream << "  •  " << YELLOW << "net PROBE" << RESET;
+                } else if (submissionStats.pool_down || submissionStats.breaker_open) {
                     stream << "  •  " << RED << "pool DOWN" << RESET;
+                    if (submissionStats.outage_ms > 0) {
+                        const auto seconds = submissionStats.outage_ms / 1000;
+                        stream << RED << " " << (seconds / 60) << "m" << (seconds % 60) << "s"
+                               << RESET;
+                    }
                 }
             }
-            stream << "  •  diff " << difficulty;
+            if (submissionStats.margin_kib > 0) {
+                stream << "  •  m " << difficulty << " (+" << submissionStats.margin_kib << ")";
+            } else {
+                stream << "  •  diff " << difficulty;
+            }
+            stream << "  •  " << getConsoleUrl(globalDashboardBind);
             if (!terminalUi) {
                 ConsoleLog::progress(stream.str());
             }
@@ -1165,11 +1229,14 @@ int main(int argc, const char *const *argv)
 
     setupRoutes(findJournal.get(), submissionManager.get());
     std::thread serverThread(startServer, dashboardBind);
-    Logger::logToConsole("Dashboard ready — open " + getConsoleUrl(dashboardBind) +
-                         " in a browser on your network"
-                         + (dashboardBind == "127.0.0.1" || dashboardBind == "::1"
-                                ? " (private: this machine only)"
-                                : "") + "\n");
+    {
+        const std::string ready = dashboardReadyMessage(dashboardBind);
+        std::cout << ready << std::flush;
+        logger.log(ready);
+        Logger::logToConsole(ready);
+        std::ofstream urlFile("dashboard.url", std::ios::trunc);
+        urlFile << ready;
+    }
     serverThread.detach();
     if(!donotupload){
         std::thread uploadStatThread(UploadDataPeriodically, 60);
