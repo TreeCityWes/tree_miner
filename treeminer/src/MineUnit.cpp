@@ -114,7 +114,13 @@ hashapi::HashApiResult MineUnit::batchCompute(std::string salt, std::string keyP
 	request.device_id = backend_.getDeviceInfo().index;
 	request.allow_xuni = isWithinXuniWindow();
 	request.first_block_dynamic_chunk_auto = true;
-	request.gpu_first_blocks = true;
+	// The GPU first-blocks (device-side Blake2b prehash) path produces INCORRECT Argon2
+	// digests on this build — verified by reproducing a live find three ways: the CPU
+	// reference and CUDA-with-CPU-first-blocks agree, while CUDA-with-GPU-first-blocks
+	// diverges and the real server rejects it (401 "Hash verification failed"). Every
+	// find made with it is unsubmittable, so it stays OFF until the kernel is corrected
+	// and covered by CPU/CUDA known-vector tests (see the startup self-test in main).
+	request.gpu_first_blocks = false;
 	return hashBackend_.runBatch(request);
 }
 
