@@ -73,9 +73,13 @@ public:
 
     // Counters for the stats endpoint.
     struct Counts {
+        // Union of both consumers: the stats endpoint wants the parked split
+        // (parked_difficulty/parked_xuni), the terminal status line wants the per-kind
+        // queued split (queued_xen11/queued_xuni = Pending by kind).
         std::size_t pending = 0, parked = 0, parked_difficulty = 0, parked_xuni = 0,
                     quarantined = 0, acked_total = 0, dead_total = 0,
-                    accepted_unconfirmed = 0, permanently_invalid = 0;  // v1.1
+                    accepted_unconfirmed = 0, permanently_invalid = 0,
+                    queued_xen11 = 0, queued_xuni = 0;
     };
     virtual Counts counts() = 0;
 };

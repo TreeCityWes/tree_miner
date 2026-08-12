@@ -564,10 +564,12 @@ std::optional<std::uint32_t> FindJournal::lastKnownDifficulty() {
 IFindJournal::Counts FindJournal::counts() {
     std::lock_guard<std::mutex> lock(mutex_);
     Counts result;
-    Statement select(db_, "SELECT status, COUNT(*) FROM finds GROUP BY status;");
+    Statement select(db_, "SELECT status, kind, COUNT(*) FROM finds GROUP BY status, kind;");
     while (select.step()) {
-        const auto count = static_cast<std::size_t>(select.columnInt64(1));
-        switch (statusFromString(select.columnText(0))) {
+        const auto status = statusFromString(select.columnText(0));
+        const auto kind = kindFromString(select.columnText(1));
+        const auto count = static_cast<std::size_t>(select.columnInt64(2));
+        switch (status) {
             case FindStatus::Pending:             result.pending += count; break;
             case FindStatus::ParkedDifficulty:
                 result.parked += count;
@@ -583,6 +585,13 @@ IFindJournal::Counts FindJournal::counts() {
             case FindStatus::AcceptedUnconfirmed: result.accepted_unconfirmed += count; break;
             case FindStatus::PermanentlyInvalid:  result.permanently_invalid += count; break;
             case FindStatus::Submitting:          break;  // never persisted
+        }
+        if (status == FindStatus::Pending || status == FindStatus::AcceptedUnconfirmed) {
+            if (kind == FindKind::XEN11) {
+                result.queued_xen11 += count;
+            } else {
+                result.queued_xuni += count;
+            }
         }
     }
     return result;

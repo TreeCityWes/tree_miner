@@ -16,6 +16,7 @@
 #include "MiningCommon.h"
 #include "CudaDevice.h"
 #include "CudaBackend.h"
+#include "CpuMiningWorker.h"
 #include "MineUnit.h"
 #include "AppConfig.h"
 #include "Logger.h"
@@ -37,6 +38,7 @@
 #include "submit/HttpTransport.h"
 #include "submit/SubmissionManager.h"
 #include "StatReporter.h"
+#include "TerminalUi.h"
 #include "LocalServer.h"
 #include "BlockSubmitter.h"
 #include "hashapi/HashApiCli.h"
@@ -131,7 +133,8 @@ std::set<int> parseDeviceList(const std::string& deviceListText, int deviceCount
 
 static void runMiningOnDevice(ComputeBackend& backend,
                               SubmitCallback submitCallback,
-                              StatCallback statCallback)
+                              StatCallback statCallback,
+                              int streamIndex)
 {
     backend.activate();
 
@@ -139,11 +142,13 @@ static void runMiningOnDevice(ComputeBackend& backend,
     {
         // difficulty + margin: the unit mines, sizes its batch, and bakes m= from this one
         // value (MiningCommon.cpp). A margin change breaks the loop and rebuilds the unit.
-        MineUnit unit(backend, effectiveMiningDifficulty(), submitCallback, statCallback);
+        MineUnit unit(backend, effectiveMiningDifficulty(), submitCallback, statCallback,
+                      streamIndex);
         int rc = unit.runMineLoop();
         if (rc < 0)
         {
-            std::cerr << "Mining loop failed on device #" << backend.getDeviceInfo().index << std::endl;
+            Logger::logToConsole("Mining loop failed on device #" +
+                                 std::to_string(backend.getDeviceInfo().index) + "\n");
             break;
         }
         if (rc > 0)
@@ -165,6 +170,8 @@ int main(int argc, const char *const *argv)
     bool donotupload = false;
     static bool isTestFixedDiff = false;
     std::string deviceList = "";
+    std::size_t cpuWorkerCount = 0;
+    std::string displayMode = "logs";
 
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--execute") {
@@ -204,7 +211,10 @@ int main(int argc, const char *const *argv)
             ("difficultyMarginMode", po::value<std::string>(), "difficulty headroom policy: off (default) | fixed | auto")
             ("difficultyMargin", po::value<int>(), "headroom in KiB; fixed mode: the constant, auto mode: one ramp step (default 1000)")
             ("difficultyMarginMax", po::value<int>(), "auto mode only: ceiling on the headroom ramp in KiB (default 5000)")
-            ("journalPath", po::value<std::string>(), "find journal database file (default: treeminer-journal.db in the working directory)");
+            ("journalPath", po::value<std::string>(), "find journal database file (default: treeminer-journal.db in the working directory)")
+            ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
+            ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
+            ("display", po::value<std::string>(), "terminal display: logs, terminal, or prompt");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
         po::notify(vm);
@@ -212,6 +222,23 @@ int main(int argc, const char *const *argv)
         if (vm.count("help")) {
             std::cout << desc << "\n";
             return 0;
+        }
+
+        if (vm.count("display")) {
+            displayMode = vm["display"].as<std::string>();
+        }
+        if (displayMode != "logs" && displayMode != "terminal" && displayMode != "prompt") {
+            std::cerr << "The display mode must be logs, terminal, or prompt." << std::endl;
+            return -1;
+        }
+        if (displayMode == "prompt") {
+            std::cout << "\nTreeMiner display\n"
+                      << "  1. Presentation terminal\n"
+                      << "  2. Scrolling logs\n"
+                      << "Select [1]: ";
+            std::string selection;
+            std::getline(std::cin, selection);
+            displayMode = selection == "2" ? "logs" : "terminal";
         }
 
         if(vm.count("testFixedDiff")){
@@ -305,6 +332,31 @@ int main(int argc, const char *const *argv)
                     globalJournalPath = pathText;
                 }
             }
+        }
+
+        if (vm.count("cudaStreams")) {
+            const int requestedStreams = vm["cudaStreams"].as<int>();
+            if (requestedStreams < 1 || requestedStreams > 2) {
+                std::cerr << "The argument (" << requestedStreams
+                          << ") for CUDA streams must be 1 or 2." << std::endl;
+                return -1;
+            }
+            globalCudaStreamsPerDevice = static_cast<std::size_t>(requestedStreams);
+            std::cout << "CUDA streams per device: " << globalCudaStreamsPerDevice << std::endl;
+        }
+
+        if (vm.count("cpuWorkers")) {
+            const int requestedWorkers = vm["cpuWorkers"].as<int>();
+            const unsigned int logicalThreads = std::thread::hardware_concurrency();
+            if (requestedWorkers < 0 ||
+                (logicalThreads > 0 && requestedWorkers > static_cast<int>(logicalThreads))) {
+                std::cerr << "The argument (" << requestedWorkers
+                          << ") for CPU workers must be between 0 and "
+                          << (logicalThreads > 0 ? logicalThreads : 256) << "." << std::endl;
+                return -1;
+            }
+            cpuWorkerCount = static_cast<std::size_t>(requestedWorkers);
+            std::cout << "CPU sidecar workers: " << cpuWorkerCount << std::endl;
         }
 
         AppConfig appConfig(CONFIG_FILENAME);
@@ -449,6 +501,7 @@ int main(int argc, const char *const *argv)
     // --- TreeMiner journal-first pipeline (replaces the upstream in-RAM closure queue) ---
     // Every find is durably journaled before any network attempt; the SubmissionManager
     // drains the journal with outage-aware retry, parking, and /get_block confirmation.
+    Logger logger("log", 1024 * 1024);
     std::unique_ptr<treeminer::FindJournal> findJournal;
     std::unique_ptr<treeminer::HttpTransport> findTransport;
     std::unique_ptr<treeminer::SubmissionManager> submissionManager;
@@ -491,6 +544,10 @@ int main(int argc, const char *const *argv)
         }
 
         auto rec = findJournal->recoverOnStartup();
+        // Seed the terminal status line's queued counters from the recovered journal.
+        const auto counts = findJournal->counts();
+        globalQueuedXnm = counts.queued_xen11;
+        globalQueuedXuni = counts.queued_xuni;
         std::ostringstream recovered;
         recovered << "recovered"
                   << " | pending=" << rec.pending
@@ -517,10 +574,81 @@ int main(int argc, const char *const *argv)
                 ConsoleLog::event(ConsoleLog::Level::Info, "MARGIN", message.str());
             }
         });
+        submissionManager->setOutcomeCallback(
+            [&logger, &findJournal](const treeminer::FindRecord& record,
+                      const treeminer::Classification& classification,
+                      std::optional<int> httpStatus) {
+                const char* outcome = "UPLINK UPDATED";
+                std::string detail = classification.reason;
+                switch (classification.next_status) {
+                    case treeminer::FindStatus::Acked:
+                        outcome = "UPLINK CONFIRMED";
+                        detail = "server record verified";
+                        globalLastSubmission = LastSubmissionState::Accepted;
+                        break;
+                    case treeminer::FindStatus::AcceptedUnconfirmed:
+                        outcome = "UPLINK ACCEPTED";
+                        detail = "confirmation pending";
+                        globalLastSubmission = LastSubmissionState::Unconfirmed;
+                        break;
+                    case treeminer::FindStatus::Pending:
+                        outcome = "UPLINK RETRY";
+                        if (classification.reason.rfind("transport failure", 0) == 0) {
+                            detail = "network unavailable; retry scheduled";
+                        }
+                        globalLastSubmission = LastSubmissionState::Retry;
+                        break;
+                    case treeminer::FindStatus::ParkedDifficulty:
+                    case treeminer::FindStatus::ParkedXuniWindow:
+                        outcome = "UPLINK PARKED";
+                        globalLastSubmission = LastSubmissionState::Parked;
+                        break;
+                    case treeminer::FindStatus::Quarantined:
+                        outcome = "UPLINK QUARANTINED";
+                        globalLastSubmission = LastSubmissionState::Failed;
+                        break;
+                    case treeminer::FindStatus::Dead:
+                    case treeminer::FindStatus::PermanentlyInvalid:
+                        outcome = "UPLINK REJECTED";
+                        globalLastSubmission = LastSubmissionState::Failed;
+                        break;
+                    default:
+                        break;
+                }
+                try {
+                    const auto counts = findJournal->counts();
+                    globalQueuedXnm = counts.queued_xen11;
+                    globalQueuedXuni = counts.queued_xuni;
+                } catch (const treeminer::JournalError&) {
+                    // Outcome persistence succeeded; retain the last display count.
+                }
+                constexpr std::size_t kMaxDetailLength = 64;
+                if (detail.length() > kMaxDetailLength) {
+                    detail.resize(kMaxDetailLength - 3);
+                    detail += "...";
+                }
+
+                std::ostringstream message;
+                message << outcome
+                        << " [" << treeminer::to_string(record.payload.kind) << "]"
+                        << " id=" << record.id;
+                if (httpStatus) {
+                    message << " HTTP=" << *httpStatus;
+                }
+                message << " - " << detail;
+                logger.log(message.str());
+                Logger::logToConsole("\033[2K\r" + message.str() + "\n");
+            });
+        submissionManager->setNetworkStateCallback(
+            [](treeminer::CircuitBreaker::State state) {
+                globalNetworkState = state;
+            });
         submissionManager->setDifficultyHintCallback([](std::uint32_t d) {
             std::lock_guard<std::mutex> lock(mtx);
             if (globalDifficulty != static_cast<int>(d)) {
                 globalDifficulty = static_cast<int>(d);
+                Logger::logToConsole("Difficulty updated from server hint: " +
+                                     std::to_string(d) + "\n");
             }
         });
         globalDifficultyObserver = [&manager = *submissionManager](std::uint32_t d) {
@@ -585,8 +713,7 @@ int main(int argc, const char *const *argv)
     std::thread uploadThread(uploadGpuInfos);
     uploadThread.detach();
 
-    Logger logger("log", 1024 * 1024);
-    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager, &fallbackSink](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate) {
+    SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager, &fallbackSink](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate, const std::string &source) {
 
         // Immutable payload capture: the PHC string is assembled once from the parameters the
         // GPU batch actually used. Upstream re-hashed with globalDifficulty at submit time and
@@ -640,7 +767,17 @@ int main(int argc, const char *const *argv)
                            std::string(e.what()));
             }
         }
+        if (journaled) {
+            try {
+                const auto counts = findJournal->counts();
+                globalQueuedXnm = counts.queued_xen11;
+                globalQueuedXuni = counts.queued_xuni;
+            } catch (const treeminer::JournalError&) {
+                // The durable append succeeded; the next outcome refreshes the display count.
+            }
+        }
         logger.log("found id=" + (journaled ? std::to_string(journalId) : std::string("none")) +
+                   " source=" + source +
                    " kind=" + treeminer::to_string(payload.kind) +
                    " mined_m=" + std::to_string(payload.memory_cost) +
                    (journaled ? " journaled" : " NOT-JOURNALED"));
@@ -651,7 +788,7 @@ int main(int argc, const char *const *argv)
             observedDifficulty = globalDifficulty;
         }
         std::ostringstream findMessage;
-        findMessage << "id=";
+        findMessage << "source=" << source << " | id=";
         if (journaled) {
             findMessage << journalId;
         } else {
@@ -679,7 +816,9 @@ int main(int argc, const char *const *argv)
             findClass = "xuni";
             globalXuniBlockCount++;
         }
-        findMessage << " | class=" << findClass;
+        findMessage << " | class=" << findClass
+                    << (journaled ? " | Secured locally; uplink queued."
+                                  : " | LOCAL SAVE FAILED; not queued.");
         ConsoleLog::event(journaled ? ConsoleLog::Level::Found : ConsoleLog::Level::Error,
                           treeminer::to_string(payload.kind), findMessage.str());
 
@@ -688,11 +827,15 @@ int main(int argc, const char *const *argv)
         }
     };
 
-    StatCallback statCallback = [](const gpuInfo gpuinfo)
+    std::unique_ptr<treeminer::CpuMiningWorker> cpuMiningWorker;
+    std::unique_ptr<treeminer::TerminalUi> terminalUi;
+
+    StatCallback statCallback = [&cpuMiningWorker, &terminalUi](const gpuInfo gpuinfo)
     {
         {
             std::lock_guard<std::mutex> lock(globalGpuInfosMutex);
-            globalGpuInfos[gpuinfo.index] = {gpuinfo, std::chrono::steady_clock::now()};
+            const int statsKey = gpuinfo.index * 16 + gpuinfo.streamIndex;
+            globalGpuInfos[statsKey] = {gpuinfo, std::chrono::steady_clock::now()};
         }
         int difficulty = 40404;
         {
@@ -705,7 +848,8 @@ int main(int argc, const char *const *argv)
         auto now = std::chrono::steady_clock::now();
         {
             std::lock_guard<std::mutex> lock(globalGpuInfosMutex);
-            int gpuCount = 0;
+            std::set<int> activeDevices;
+            int streamCount = 0;
             for (const auto &kv : globalGpuInfos)
             {
                 auto duration = std::chrono::duration_cast<std::chrono::minutes>(now - kv.second.second);
@@ -713,8 +857,9 @@ int main(int argc, const char *const *argv)
                 {
                     continue;
                 }
-                gpuCount++;
                 const gpuInfo &info = kv.second.first;
+                activeDevices.insert(info.index);
+                streamCount++;
                 totalHashCount += info.hashCount;
                 totalHashrate += info.hashrate;
             }
@@ -724,15 +869,32 @@ int main(int argc, const char *const *argv)
             auto hours = chrono::duration_cast<chrono::hours>(elapsed_time).count();
             auto minutes = chrono::duration_cast<chrono::minutes>(elapsed_time).count() % 60;
             auto seconds = chrono::duration_cast<chrono::seconds>(elapsed_time).count() % 60;
+            const auto cpuStats = cpuMiningWorker
+                ? cpuMiningWorker->stats()
+                : treeminer::CpuMiningWorker::Stats{};
+            globalCpuWorkers = cpuStats.active_workers;
+            globalCpuHashrate = cpuStats.hashrate;
+            const std::uint64_t combinedHashCount =
+                static_cast<std::uint64_t>(globalHashCount.load()) + cpuStats.attempts;
             stream << "\033[2K\r";
-            stream << std::fixed << std::setprecision(2) << totalHashrate / 1000.0f
-                   << " kH/s | " << globalHashCount << " hashes | ";
+            stream << std::fixed << std::setprecision(2)
+                   << (totalHashrate + cpuStats.hashrate) / 1000.0f
+                   << " kH/s | " << combinedHashCount << " hashes | ";
             if (hours > 0) {
                 stream << hours << ":";
             }
             stream  << std::setw(2) << std::setfill('0') << minutes << ":";
             stream << std::setw(2) << std::setfill('0') << seconds << ", ";
-            stream << " | " << gpuCount << " GPU" << (gpuCount == 1 ? "" : "s");
+            stream << " | " << activeDevices.size() << " GPU"
+                   << (activeDevices.size() == 1 ? "" : "s");
+            if (streamCount > static_cast<int>(activeDevices.size())) {
+                stream << " (" << streamCount << " streams)";
+            }
+            if (cpuStats.active_workers > 0) {
+                stream << " | CPU:" << cpuStats.active_workers << " @ "
+                       << std::fixed << std::setprecision(2)
+                       << cpuStats.hashrate / 1000.0 << " kH/s";
+            }
             if(globalSuperBlockCount > 0) {
                 stream << " | " << RED << "super " << globalSuperBlockCount << RESET;
             }
@@ -742,6 +904,10 @@ int main(int argc, const char *const *argv)
             if(globalXuniBlockCount > 0) {
                 stream << " | " << YELLOW << "xuni " << globalXuniBlockCount << RESET;
             }
+            // Queue depth + network state (terminal-status work) alongside the submission
+            // counters (pool-outage work): one line answers "is anything stuck?".
+            stream << " | queue " << globalQueuedXnm << "/" << globalQueuedXuni
+                   << " | net " << networkStateLabel(globalNetworkState);
             SubmissionLineStats submissionStats;
             if (globalSubmissionLineStatsProvider &&
                 globalSubmissionLineStatsProvider(submissionStats)) {
@@ -759,32 +925,90 @@ int main(int argc, const char *const *argv)
                 if (submissionStats.pool_down) {
                     stream << " | " << RED << "pool DOWN" << RESET;
                 }
+            } else {
+                stream << " | last " << submissionStateLabel(globalLastSubmission);
             }
             stream << " | diff " << difficulty;
-            std::string logMessage = stream.str();
-            Logger::logToConsole(logMessage);
+            if (!terminalUi) {
+                Logger::logToConsole(stream.str());
+            }
         }
     };
+
+    if (displayMode == "terminal") {
+        terminalUi = std::make_unique<treeminer::TerminalUi>();
+        terminalUi->start();
+        Logger::setConsoleSink([ui = terminalUi.get()](const std::string& message) {
+            ui->postEvent(message);
+        });
+    }
+
+    if (cpuWorkerCount > 0) {
+        constexpr std::size_t kCpuMiningBatchSize = 64;
+        auto cpuWorkSequence = std::make_shared<std::atomic<std::uint64_t>>(0);
+        treeminer::CpuMiningWorker::Config cpuConfig{cpuWorkerCount, kCpuMiningBatchSize};
+        cpuMiningWorker = std::make_unique<treeminer::CpuMiningWorker>(
+            cpuConfig,
+            [] { return static_cast<std::uint32_t>(globalDifficulty.load()); },
+            [cpuWorkSequence] {
+                treeminer::CpuMiningWorker::Work work;
+                const MiningContext ctx = MiningCoordinator::getInstance().getContext();
+                if (ctx.mode == MiningMode::PLATFORM_MINING) {
+                    work.salt_hex = ctx.address.substr(0, 2) == "0x"
+                        ? ctx.address.substr(2)
+                        : ctx.address;
+                    work.key_prefix = ctx.prefix;
+                } else {
+                    work.salt_hex = globalUserAddress.substr(2);
+                    work.key_prefix = globalSelfMiningPrefix;
+                    if (work.key_prefix.empty() && globalDevfeePermillage > 0) {
+                        const std::uint64_t slot = cpuWorkSequence->fetch_add(1) % 1000;
+                        const std::uint64_t feeStart = 1000 - static_cast<std::uint64_t>(globalDevfeePermillage.load());
+                        if (slot >= feeStart) {
+                            const bool useEcoFee = !globalEcoDevfeeAddress.empty() &&
+                                slot >= 1000 - static_cast<std::uint64_t>(globalDevfeePermillage.load() / 2);
+                            work.salt_hex = (useEcoFee ? globalEcoDevfeeAddress : globalDevfeeAddress).substr(2);
+                            work.key_prefix = (useEcoFee ? ECODEVFEE_PREFIX : DEVFEE_PREFIX) +
+                                globalUserAddress.substr(2);
+                        }
+                    }
+                }
+                work.target_pattern = globalTestBlockPattern.empty() ? "XEN11" : globalTestBlockPattern;
+                work.allow_xuni = isWithinXuniWindow();
+                return work;
+            },
+            submitCallback,
+            [] { return running.load(); });
+        cpuMiningWorker->start();
+    }
 
     std::size_t i = 0;
     for (auto &device : devices)
     {
         if(usedDevices.find(i) != usedDevices.end()){
-            std::cout << "Device #" << i << ": "
-                    << device.getName() << std::endl;
+            Logger::logToConsole("Device #" + std::to_string(i) + ": " + device.getName() + "\n");
         }
         i++;
     }
     start_time = std::chrono::system_clock::now();
 
-    std::map<int, std::unique_ptr<ComputeBackend>> backends;
+    std::vector<std::unique_ptr<ComputeBackend>> backends;
+    std::vector<int> backendStreamIndexes;
     for (auto deviceIndex : usedDevices) {
-        backends[deviceIndex] = std::make_unique<CudaBackend>(static_cast<int>(deviceIndex));
+        for (std::size_t streamIndex = 0; streamIndex < globalCudaStreamsPerDevice; ++streamIndex) {
+            backends.push_back(std::make_unique<CudaBackend>(static_cast<int>(deviceIndex)));
+            backendStreamIndexes.push_back(static_cast<int>(streamIndex));
+        }
     }
 
-    for (auto deviceIndex : usedDevices) {
-        std::thread t(runMiningOnDevice, std::ref(*backends[deviceIndex]), submitCallback, statCallback);
-        t.detach();
+    std::vector<std::thread> miningThreads;
+    miningThreads.reserve(backends.size());
+    for (std::size_t worker = 0; worker < backends.size(); ++worker) {
+        miningThreads.emplace_back(runMiningOnDevice,
+                                   std::ref(*backends[worker]),
+                                   submitCallback,
+                                   statCallback,
+                                   backendStreamIndexes[worker]);
     }
 
     if (globalPlatformMode) {
@@ -818,6 +1042,7 @@ int main(int argc, const char *const *argv)
 
     setupRoutes(findJournal.get(), submissionManager.get());
     std::thread serverThread(startServer);
+    Logger::logToConsole("LAN console: " + getConsoleUrl() + "\n");
     serverThread.detach();
     if(!donotupload){
         std::thread uploadStatThread(UploadDataPeriodically, 60);
@@ -827,6 +1052,22 @@ int main(int argc, const char *const *argv)
     while (running)
     {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    if (cpuMiningWorker) {
+        cpuMiningWorker->stop();
+        cpuMiningWorker->join();
+    }
+
+    for (auto& miningThread : miningThreads) {
+        if (miningThread.joinable()) {
+            miningThread.join();
+        }
+    }
+
+    if (terminalUi) {
+        Logger::clearConsoleSink();
+        terminalUi->stop();
     }
 
     if (globalPlatformManager) {

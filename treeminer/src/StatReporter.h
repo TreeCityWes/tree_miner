@@ -11,5 +11,6 @@ nlohmann::json vectorToJson(const std::string& machineId,
                             const std::vector<std::pair<int, gpuInfo>>& data);
 void uploadGpuInfos();
 std::string getGpuStatsJson();
+nlohmann::json getMinerDashboardData();
 nlohmann::json getStatData();
 void UploadDataPeriodically(int uploadPeriod);

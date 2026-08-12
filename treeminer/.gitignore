@@ -17,3 +17,12 @@ benchmark-results/
 .claude/
 .deps/
 .venv/
+
+# Local miner state and private configuration
+config.txt
+difficulty.cache
+miner-runtime.log
+treeminer-journal.db*
+.env
+.env.*
+!.env.example

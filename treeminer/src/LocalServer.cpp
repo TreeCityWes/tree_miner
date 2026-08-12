@@ -1,9 +1,16 @@
 #include "LocalServer.h"
 
 #include <chrono>
+#include <filesystem>
 #include <mutex>
 
 #include <nlohmann/json.hpp>
+#ifndef _WIN32
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#endif
+#include "DashboardPage.h"
 #include "StatReporter.h"
 #include "MiningCommon.h"
 #include "MiningCoordinator.h"
@@ -100,8 +107,36 @@ crow::SimpleApp& getApp() {
     return s_app;
 }
 
+std::string getConsoleUrl() {
+    static const std::string url = [] {
+        std::string address = "127.0.0.1";
+#ifndef _WIN32
+        const int fd = socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd >= 0) {
+            sockaddr_in destination{};
+            destination.sin_family = AF_INET;
+            destination.sin_port = htons(53);
+            inet_pton(AF_INET, "1.1.1.1", &destination.sin_addr);
+            if (connect(fd, reinterpret_cast<sockaddr*>(&destination), sizeof(destination)) == 0) {
+                sockaddr_in local{};
+                socklen_t length = sizeof(local);
+                if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &length) == 0) {
+                    char buffer[INET_ADDRSTRLEN]{};
+                    if (inet_ntop(AF_INET, &local.sin_addr, buffer, sizeof(buffer))) {
+                        address = buffer;
+                    }
+                }
+            }
+            close(fd);
+        }
+#endif
+        return "http://" + address + ":42069";
+    }();
+    return url;
+}
+
 void startServer() {
-    s_app.port(42069).multithreaded().run();
+    s_app.bindaddr("0.0.0.0").port(42069).multithreaded().run();
 }
 
 void setupRoutes(treeminer::IFindJournal* journal,
@@ -149,5 +184,35 @@ void setupRoutes(treeminer::IFindJournal* journal,
             result["running"] = false;
         }
         return result.dump();
+    });
+
+    CROW_ROUTE(s_app, "/")
+    ([](){
+        crow::response response{std::string(treeminer::dashboard::kPage)};
+        response.set_header("Content-Type", "text/html; charset=utf-8");
+        response.set_header("Cache-Control", "no-store");
+        return response;
+    });
+
+    CROW_ROUTE(s_app, "/assets/hashfield.webp")
+    ([](){
+        crow::response response;
+        const std::filesystem::path asset = "res/dashboard/hashfield.webp";
+        if (!std::filesystem::exists(asset)) {
+            response.code = 404;
+            response.body = "asset unavailable";
+            return response;
+        }
+        response.set_static_file_info(asset.string());
+        response.set_header("Cache-Control", "public, max-age=86400");
+        return response;
+    });
+
+    CROW_ROUTE(s_app, "/api/rig")
+    ([](){
+        crow::response response{getMinerDashboardData().dump()};
+        response.set_header("Content-Type", "application/json");
+        response.set_header("Cache-Control", "no-store");
+        return response;
     });
 }

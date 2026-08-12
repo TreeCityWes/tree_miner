@@ -146,6 +146,10 @@ int main() {
         Clocks clk;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
+        std::vector<FindStatus> outcomes;
+        m.setOutcomeCallback([&](const auto&, const auto& classification, auto) {
+            outcomes.push_back(classification.next_status);
+        });
         auto id = j.append(payload("aa11", FindKind::XEN11, 100000));
         t.submit_queue.push_back(ok(200, kOk200));
         t.confirm_queue.push_back(ok(200, kBlockRow));
@@ -156,6 +160,8 @@ int main() {
         CHECK_STREQ(t.confirmed_keys[0], "aa11");
         CHECK_EQ(m.metrics().acked, 1u);
         CHECK_EQ(m.metrics().reconciled_via_get_block, 1u);
+        CHECK_EQ(outcomes.size(), static_cast<std::size_t>(1));
+        CHECK(outcomes.front() == FindStatus::Acked);
     }
 
     // --- the lying-200: confirm 404 -> back to Pending ---
@@ -229,7 +235,11 @@ int main() {
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
         std::vector<std::uint32_t> hints;
+        std::vector<FindStatus> outcomes;
         m.setDifficultyHintCallback([&](std::uint32_t d) { hints.push_back(d); });
+        m.setOutcomeCallback([&](const auto&, const auto& classification, auto) {
+            outcomes.push_back(classification.next_status);
+        });
         auto id = j.append(payload("aa55", FindKind::XEN11, 100000));
         t.submit_queue.push_back(
             ok(401, R"({"message": "Hash does not contain 'm=104000'. Your memory_cost setting in your miner will be autoadjusted."})"));
@@ -240,6 +250,8 @@ int main() {
         CHECK_EQ(m.lastObservedDifficulty().value_or(0), 104000u);
         CHECK(!j.difficulty_log.empty());
         CHECK_EQ(j.difficulty_log.back().first, 104000u);
+        CHECK_EQ(outcomes.size(), static_cast<std::size_t>(1));
+        CHECK(outcomes.front() == FindStatus::ParkedDifficulty);
     }
 
     // --- 429 Retry-After drives next_attempt_at ---
@@ -291,6 +303,9 @@ int main() {
         clk.wall = 1767227400000LL;  // 2026-01-01T00:30:00Z — XUNI window closed
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
+        std::vector<CircuitBreaker::State> network_states;
+        m.setNetworkStateCallback(
+            [&](CircuitBreaker::State state) { network_states.push_back(state); });
         auto id = j.append(payload("bb11", FindKind::XEN11, 100000));
 
         for (int i = 0; i < 3; ++i) {
@@ -301,6 +316,8 @@ int main() {
             CHECK(m.runOnce() == StepResult::Submitted);
         }
         CHECK(m.breakerState() == CircuitBreaker::State::Open);
+        CHECK(!network_states.empty());
+        CHECK(network_states.back() == CircuitBreaker::State::Open);
         CHECK_EQ(m.metrics().transport_failures, 3u);
 
         // OPEN: no /verify traffic; probe not due yet right after opening.
@@ -316,6 +333,7 @@ int main() {
         t.difficulty_queue.push_back(ok(200, R"({"difficulty": "100000"})"));
         CHECK(m.runOnce() == StepResult::Probed);
         CHECK(m.breakerState() == CircuitBreaker::State::HalfOpen);
+        CHECK(network_states.back() == CircuitBreaker::State::HalfOpen);
         CHECK_EQ(m.lastObservedDifficulty().value_or(0), 100000u);
 
         // HALF_OPEN: one real queued submission; success closes and drain restarts at 1/s.
@@ -324,6 +342,7 @@ int main() {
         t.confirm_queue.push_back(ok(200, kBlockRow));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(m.breakerState() == CircuitBreaker::State::Closed);
+        CHECK(network_states.back() == CircuitBreaker::State::Closed);
         CHECK(j.record(id).status == FindStatus::Acked);
         CHECK_EQ(static_cast<int>(m.drainRatePerSecond()), 1);
     }
@@ -367,6 +386,28 @@ int main() {
         CHECK_EQ(j.unpark_xuni_calls, 1);
         CHECK(m.runOnce() == StepResult::Idle);  // still open: no re-trigger
         CHECK_EQ(j.unpark_xuni_calls, 1);
+    }
+
+    TEST_CASE("closed-window XUNI backlog does not hide a later XEN11");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;  // 00:30 - XUNI window closed
+        auto cfg = testConfig();
+        cfg.fetch_limit = 2;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        j.append(payload("xuni-1", FindKind::XUNI, 100000));
+        j.append(payload("xuni-2", FindKind::XUNI, 100000));
+        j.append(payload("xuni-3", FindKind::XUNI, 100000));
+        const auto xen_id = j.append(payload("xen-1", FindKind::XEN11, 100000));
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, kBlockRow));
+
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK_STREQ(t.submitted_keys.front(), "xen-1");
+        CHECK(j.record(xen_id).status == FindStatus::Acked);
     }
 
     // --- falling difficulty unparks difficulty-parked records ---

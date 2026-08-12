@@ -15,6 +15,39 @@ else()
 endif()
 
 if(XENBLOCKS_BUILD_MINER)
+    # Select the compute capabilities of GPUs visible during configuration.
+    # Explicit -DCMAKE_CUDA_ARCHITECTURES values still win for cross-builds.
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(TREEMINER_SMI_RESULT 1)
+        find_program(TREEMINER_NVIDIA_SMI nvidia-smi)
+        if(TREEMINER_NVIDIA_SMI)
+            execute_process(
+                COMMAND ${TREEMINER_NVIDIA_SMI} --query-gpu=compute_cap --format=csv,noheader,nounits
+                RESULT_VARIABLE TREEMINER_SMI_RESULT
+                OUTPUT_VARIABLE TREEMINER_COMPUTE_CAPS
+                OUTPUT_STRIP_TRAILING_WHITESPACE
+                ERROR_QUIET)
+        endif()
+        if(TREEMINER_SMI_RESULT EQUAL 0 AND NOT TREEMINER_COMPUTE_CAPS STREQUAL "")
+            string(REPLACE "\r" "" TREEMINER_COMPUTE_CAPS "${TREEMINER_COMPUTE_CAPS}")
+            string(REPLACE "\n" ";" TREEMINER_COMPUTE_CAPS "${TREEMINER_COMPUTE_CAPS}")
+            set(TREEMINER_DETECTED_ARCHITECTURES "")
+            foreach(TREEMINER_CAP IN LISTS TREEMINER_COMPUTE_CAPS)
+                string(STRIP "${TREEMINER_CAP}" TREEMINER_CAP)
+                if(TREEMINER_CAP MATCHES "^([0-9]+)\\.([0-9]+)$")
+                    list(APPEND TREEMINER_DETECTED_ARCHITECTURES "${CMAKE_MATCH_1}${CMAKE_MATCH_2}")
+                endif()
+            endforeach()
+            list(REMOVE_DUPLICATES TREEMINER_DETECTED_ARCHITECTURES)
+            if(TREEMINER_DETECTED_ARCHITECTURES)
+                set(CMAKE_CUDA_ARCHITECTURES "${TREEMINER_DETECTED_ARCHITECTURES}"
+                    CACHE STRING "CUDA architectures detected from nvidia-smi")
+            endif()
+        endif()
+        if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+            message(WARNING "No NVIDIA compute capability detected; pass -DCMAKE_CUDA_ARCHITECTURES explicitly")
+        endif()
+    endif()
     project(xenblocksMiner LANGUAGES CUDA CXX VERSION 1.0)
 else()
     project(xenblocksMiner LANGUAGES CXX VERSION 1.0)
@@ -30,10 +63,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED True)
 if(XENBLOCKS_BUILD_MINER)
     set(CMAKE_CUDA_STANDARD 17)
     set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-    # Produce native code for every architecture supported by the selected
-    # toolkit. Users can still request a smaller target set explicitly.
-    if(NOT XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT)
+    # Produce native code for every architecture supported by the selected toolkit —
+    # but only when nothing chose one already. Precedence: explicit
+    # -DCMAKE_CUDA_ARCHITECTURES > nvidia-smi detection above (local dev builds) >
+    # these toolkit-tier fat-binary defaults (release/CI builds on GPU-less hosts).
+    if(NOT XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT AND NOT TREEMINER_DETECTED_ARCHITECTURES)
         if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 13.0)
             set(_xenblocks_cuda_architectures 75-real 80-real 86-real 87-real 89-real 90-real 120)
         elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
@@ -54,7 +88,7 @@ if(XENBLOCKS_BUILD_MINER)
                 "detected CUDA ${CMAKE_CUDA_COMPILER_VERSION}.")
         endif()
     endforeach()
-    message(STATUS "CUDA ${CMAKE_CUDA_COMPILER_VERSION}; building architectures: ${CMAKE_CUDA_ARCHITECTURES}")
+    message(STATUS "TreeMiner CUDA architectures (toolkit ${CMAKE_CUDA_COMPILER_VERSION}): ${CMAKE_CUDA_ARCHITECTURES}")
 endif()
 
 if(WIN32)
@@ -142,6 +176,7 @@ if(XENBLOCKS_BUILD_MINER)
 endif()
 if(TREEMINER_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(tests/unit/cpu)
     add_subdirectory(tests/unit/journal)
     add_subdirectory(tests/unit/submit)
     # Chaos gates (PLAN §6): needs both the journal and the submit library, so it is only
@@ -157,6 +192,7 @@ set(SOURCE_FILES
     src/ProcessMonitor.cpp
     src/DifficultyManager.cpp
     src/StatReporter.cpp
+    src/TerminalUi.cpp
     src/LocalServer.cpp
     src/BlockSubmitter.cpp
     src/AppConfig.cpp
@@ -165,6 +201,7 @@ set(SOURCE_FILES
     src/ConfigManager.cpp
     src/CudaDevice.cpp
     src/CudaBackend.cpp
+    src/CpuMiningWorker.cpp
     src/kernelrunner.cu
     src/MineUnit.cpp
     src/MiningCommon.cpp
