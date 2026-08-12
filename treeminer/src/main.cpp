@@ -171,6 +171,9 @@ int main(int argc, const char *const *argv)
     static bool isTestFixedDiff = false;
     std::string deviceList = "";
     std::size_t cpuWorkerCount = 0;
+    // CPU hashing only pays near the difficulty floor; above this ceiling the workers
+    // idle and auto-resume when difficulty falls back (see CpuMiningWorker::Config).
+    std::uint32_t cpuMaxDifficulty = 100;
     std::string displayMode = "logs";
 
     for (int i = 1; i < argc; ++i) {
@@ -214,6 +217,7 @@ int main(int argc, const char *const *argv)
             ("journalPath", po::value<std::string>(), "find journal database file (default: treeminer-journal.db in the working directory)")
             ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
             ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
+            ("cpuMaxDifficulty", po::value<int>(), "CPU workers hash only while difficulty <= this ceiling; they idle above it and resume when it falls (default 100; 0 = no ceiling)")
             ("display", po::value<std::string>(), "terminal display: logs, terminal, or prompt");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -357,6 +361,16 @@ int main(int argc, const char *const *argv)
             }
             cpuWorkerCount = static_cast<std::size_t>(requestedWorkers);
             std::cout << "CPU sidecar workers: " << cpuWorkerCount << std::endl;
+        }
+
+        if (vm.count("cpuMaxDifficulty")) {
+            const int requestedCeiling = vm["cpuMaxDifficulty"].as<int>();
+            if (requestedCeiling < 0 || requestedCeiling > 100000000) {
+                std::cerr << "The argument (" << requestedCeiling
+                          << ") for the CPU difficulty ceiling must be 0-100000000." << std::endl;
+                return -1;
+            }
+            cpuMaxDifficulty = static_cast<std::uint32_t>(requestedCeiling);
         }
 
         AppConfig appConfig(CONFIG_FILENAME);
@@ -891,9 +905,13 @@ int main(int argc, const char *const *argv)
                 stream << " (" << streamCount << " streams)";
             }
             if (cpuStats.active_workers > 0) {
-                stream << " | CPU:" << cpuStats.active_workers << " @ "
-                       << std::fixed << std::setprecision(2)
-                       << cpuStats.hashrate / 1000.0 << " kH/s";
+                if (cpuStats.paused_for_difficulty) {
+                    stream << " | CPU idle (diff>" << cpuStats.max_difficulty << ")";
+                } else {
+                    stream << " | CPU:" << cpuStats.active_workers << " @ "
+                           << std::fixed << std::setprecision(2)
+                           << cpuStats.hashrate / 1000.0 << " kH/s";
+                }
             }
             if(globalSuperBlockCount > 0) {
                 stream << " | " << RED << "super " << globalSuperBlockCount << RESET;
@@ -946,7 +964,12 @@ int main(int argc, const char *const *argv)
     if (cpuWorkerCount > 0) {
         constexpr std::size_t kCpuMiningBatchSize = 64;
         auto cpuWorkSequence = std::make_shared<std::atomic<std::uint64_t>>(0);
-        treeminer::CpuMiningWorker::Config cpuConfig{cpuWorkerCount, kCpuMiningBatchSize};
+        treeminer::CpuMiningWorker::Config cpuConfig{cpuWorkerCount, kCpuMiningBatchSize,
+                                                     cpuMaxDifficulty};
+        if (cpuMaxDifficulty > 0) {
+            std::cout << "CPU workers hash only at difficulty <= " << cpuMaxDifficulty
+                      << " (idle above; auto-resume)" << std::endl;
+        }
         cpuMiningWorker = std::make_unique<treeminer::CpuMiningWorker>(
             cpuConfig,
             [] { return static_cast<std::uint32_t>(globalDifficulty.load()); },

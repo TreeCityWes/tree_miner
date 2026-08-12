@@ -23,6 +23,12 @@ public:
     struct Config {
         std::size_t worker_count = 1;
         std::size_t batch_size = 1;
+        // CPU hashing is only worthwhile near the difficulty floor: m IS the Argon2
+        // memory cost, so at high difficulty a CPU burns power for a negligible share
+        // of the network. Workers idle (cheap poll, no hashing) while the observed
+        // difficulty exceeds this ceiling and resume automatically when it falls.
+        // 0 disables the gate (hash at any difficulty).
+        std::uint32_t max_difficulty = 0;
     };
 
     struct Work {
@@ -40,6 +46,9 @@ public:
         std::size_t active_workers = 0;
         std::uint32_t difficulty = 0;
         bool running = false;
+        // True while workers are alive but idling because difficulty > max_difficulty.
+        bool paused_for_difficulty = false;
+        std::uint32_t max_difficulty = 0;   // the configured ceiling (0 = no gate)
         std::string last_error;
     };
 
@@ -86,6 +95,7 @@ private:
     std::atomic<std::uint64_t> matches_{0};
     std::atomic<std::size_t> active_workers_{0};
     std::atomic<std::uint32_t> difficulty_{0};
+    std::atomic<bool> paused_for_difficulty_{false};
 
     mutable std::mutex lifecycle_mutex_;
     mutable std::mutex stats_mutex_;

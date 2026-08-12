@@ -166,6 +166,8 @@ CpuMiningWorker::Stats CpuMiningWorker::stats() const
     snapshot.active_workers = active_workers_.load();
     snapshot.difficulty = difficulty_.load();
     snapshot.running = running_.load();
+    snapshot.paused_for_difficulty = paused_for_difficulty_.load();
+    snapshot.max_difficulty = config_.max_difficulty;
 
     std::lock_guard<std::mutex> stats_lock(stats_mutex_);
     snapshot.hashrate = 0.0;
@@ -225,6 +227,20 @@ void CpuMiningWorker::runWorker(std::size_t worker_index) noexcept
                 throw std::runtime_error("CPU mining difficulty must be at least 8");
             }
             difficulty_.store(difficulty);
+
+            // Difficulty gate: above the ceiling, idle instead of hashing. The poll stays
+            // short so a stop request or a difficulty drop is picked up within ~250 ms,
+            // and the published hashrate goes to zero so the status line reads truthfully.
+            if (config_.max_difficulty > 0 && difficulty > config_.max_difficulty) {
+                paused_for_difficulty_.store(true);
+                {
+                    std::lock_guard<std::mutex> stats_lock(stats_mutex_);
+                    worker_hashrates_[worker_index] = 0.0;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                continue;
+            }
+            paused_for_difficulty_.store(false);
 
             const Work work = work_provider_();
             hashapi::HashApiRequest request;
