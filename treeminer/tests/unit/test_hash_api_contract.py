@@ -137,19 +137,27 @@ def test_terminal_status_reports_submission_outcomes_without_journal_io():
     ]:
         assert field in main
     assert '" | net "' not in main
-    assert 'stream << " | " << RED << "pool DOWN"' not in main
+    # An outage must stay visible at a glance on the live line (regression guard: a prior
+    # humanized rewrite dropped this, hiding pool-down behind a silently growing queue).
+    assert 'RED << "pool DOWN"' in main
     assert "ConsoleLog::progress(stream.str())" in main
     assert 'Logger::logToConsole("\\033[2K\\r" + message.str()' not in main
 
     manager = read("src/submit/SubmissionManager.cpp")
-    for transition in ["submissions paused; finds remain queued", "submissions restored"]:
+    # Breaker transitions stay human-readable AND carry the recovery detail operators need.
+    for transition in ["submissions paused", "submissions restored after"]:
         assert transition in manager
+    assert "outageDurationMs()" in manager  # "how long was the pool down" must survive
+    # RECOVERED must read the LATCHED span, not the live clock (updateMargin_ zeroes the
+    # live clock before the breaker fully closes → would always log "restored after 0s").
+    assert "last_outage_span_ms_" in manager
     assert '"POOL"' not in manager
 
     difficulty = read("src/DifficultyManager.cpp")
     assert "kPoolDownFailureThreshold = 3" in difficulty
-    assert "difficulty unavailable; using cached value and retrying" in difficulty
+    assert "using cached value and retrying" in difficulty
     assert "difficulty restored" in difficulty
+    assert "difficulty endpoint DOWN" in difficulty  # threshold escalation must survive
     assert '"POOL"' not in difficulty
     assert "globalDifficultyEndpointDown" in difficulty
 

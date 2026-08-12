@@ -125,12 +125,21 @@ void updateDifficulty()
         ++consecutiveDifficultyFailures;
         if (consecutiveDifficultyFailures == 1)
         {
+            // Keep the cause (DNS/timeout/HTTP) on the first failure — it's the operator's
+            // first clue whether the pool, the link, or DNS is the problem.
             ConsoleLog::event(ConsoleLog::Level::Warn, "NETWORK",
-                              "difficulty unavailable; using cached value and retrying");
+                              std::string("difficulty poll failed; using cached value and retrying — ") +
+                                  e.what());
         }
         if (consecutiveDifficultyFailures == kPoolDownFailureThreshold)
         {
             globalDifficultyEndpointDown.store(true);
+            // Escalate once when we cross the threshold: this is the durable "the difficulty
+            // endpoint is down" signal, distinct from a single transient poll miss.
+            ConsoleLog::event(ConsoleLog::Level::Error, "NETWORK",
+                              "difficulty endpoint DOWN after " +
+                                  std::to_string(consecutiveDifficultyFailures) +
+                                  " failures — mining continues on cached difficulty; polling every 10s");
         }
     }
 }

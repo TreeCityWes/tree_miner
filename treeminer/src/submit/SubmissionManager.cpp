@@ -410,6 +410,13 @@ void SubmissionManager::updateMargin_() {
             outage_started_ms_.store(now);
         }
     } else {
+        // Latch the outage span before clearing the live clock, so the RECOVERED log (which
+        // fires a step later, once the breaker fully closes) can report how long we were down.
+        const std::int64_t started = outage_started_ms_.load();
+        if (started != 0) {
+            const std::int64_t span = now - started;
+            last_outage_span_ms_.store(span > 0 ? span : 0);
+        }
         outage_started_ms_.store(0);
     }
 
@@ -749,11 +756,28 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     } else {
         submission_message << " " << logStatus(c.next_status);
     }
-    submission_message << " | m=" << rec->payload.memory_cost << " | ";
+    submission_message << " | m=" << rec->payload.memory_cost;
+    // Margin vs the server difficulty is the most useful field when a find is parked or
+    // rejected: it answers "did I mine enough headroom?". Prefer the fresh hint from this
+    // response body, else the last difficulty we observed.
+    const std::optional<std::uint32_t> server_m =
+        c.server_difficulty_hint ? c.server_difficulty_hint : known_difficulty_before_response;
+    if (server_m) {
+        submission_message << " vs server " << *server_m << " (margin " << std::showpos
+                           << (static_cast<std::int64_t>(rec->payload.memory_cost) -
+                               static_cast<std::int64_t>(*server_m))
+                           << std::noshowpos << ")";
+    }
+    submission_message << " | ";
     if (res.transport_ok) {
         submission_message << "HTTP " << res.http_status;
     } else {
         submission_message << "network unavailable";
+    }
+    // Keep the reason ("why parked/rejected/resubmitting") on the console for anything that
+    // is not a clean confirmation — this is the thread an operator pulls during an outage.
+    if (c.next_status != FindStatus::Acked && !c.reason.empty()) {
+        submission_message << " | " << c.reason;
     }
     const ConsoleLog::Level submission_level =
         c.next_status == FindStatus::Acked ? ConsoleLog::Level::Ok
@@ -843,17 +867,28 @@ void SubmissionManager::logBreakerTransition_(CircuitBreaker::State before,
     const IFindJournal::Counts counts = journal_.counts();
     const std::size_t backlog = counts.pending + counts.parked +
                                 counts.accepted_unconfirmed + counts.quarantined;
+    auto human_ms = [](std::int64_t ms) {
+        const std::int64_t s = ms / 1000;
+        std::ostringstream o;
+        if (s >= 60) o << (s / 60) << "m " << (s % 60) << "s";
+        else o << s << "s";
+        return o.str();
+    };
     std::ostringstream message;
     if (after == CircuitBreaker::State::Open) {
         const auto retry_ms = std::max<std::int64_t>(0, breaker_.nextProbeAtMs() - mono_());
-        message << "submissions paused; finds remain queued"
-                << " | backlog=" << backlog
-                << " | retry_ms=" << retry_ms;
+        message << "submissions paused (" << cause << ") — " << backlog << " find"
+                << (backlog == 1 ? "" : "s") << " safe in queue; retry in "
+                << (retry_ms / 1000) << "s";
         ConsoleLog::event(ConsoleLog::Level::Warn, "NETWORK", message.str());
     } else if (after == CircuitBreaker::State::HalfOpen) {
         return;
     } else {
-        message << "submissions restored | queued=" << backlog;
+        // Outage duration is the headline recovery metric — "how long were we down" — and
+        // is otherwise unrecoverable once the breaker closes. Read the latched span, not the
+        // live clock: updateMargin_ zeroes outage_started_ms_ before this transition fires.
+        message << "submissions restored after " << human_ms(last_outage_span_ms_.load())
+                << " — " << backlog << " queued, draining";
         ConsoleLog::event(ConsoleLog::Level::Ok, "NETWORK", message.str());
     }
 }

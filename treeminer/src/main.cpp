@@ -177,7 +177,10 @@ int main(int argc, const char *const *argv)
     // idle and auto-resume when difficulty falls back (see CpuMiningWorker::Config).
     std::uint32_t cpuMaxDifficulty = 100;
     std::string displayMode = "logs";
-    std::string dashboardBind = "127.0.0.1";
+    // Reachable on the LAN by default so the operator can open the dashboard from
+    // another device (phone/laptop) by browsing to this rig's IP. All dashboard
+    // routes are read-only stats; set --dashboard-bind 127.0.0.1 to keep it private.
+    std::string dashboardBind = "0.0.0.0";
 
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--execute") {
@@ -221,7 +224,7 @@ int main(int argc, const char *const *argv)
             ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
             ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
             ("cpuMaxDifficulty", po::value<int>(), "CPU workers hash only while difficulty <= this ceiling; they idle above it and resume when it falls (default 100; 0 = no ceiling)")
-            ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 127.0.0.1; use 0.0.0.0 explicitly for LAN access)")
+            ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 0.0.0.0 = reachable on your LAN; set 127.0.0.1 to restrict to this machine)")
             ("display", po::value<std::string>(), "terminal display: logs, terminal, or prompt");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -346,8 +349,8 @@ int main(int argc, const char *const *argv)
                 }
             }
 
-            // Keep the operator console private unless LAN exposure is explicitly
-            // requested. The command line takes precedence over config.txt.
+            // Dashboard is LAN-reachable by default; config.txt can override the bind
+            // (e.g. to 127.0.0.1 for a private console). Command line wins over config.
             if (!vm.count("dashboard-bind")) {
                 const std::string configuredBind = configuredValue("dashboard_bind");
                 if (!configuredBind.empty()) {
@@ -897,6 +900,11 @@ int main(int argc, const char *const *argv)
         } else {
             findClass = "xuni";
         }
+        // Call out a superblock — it is worth far more than a normal block, so it should be
+        // impossible to miss scrolling the log. Normal/xuni are already clear from the kind.
+        if (findClass == "superblock") {
+            findMessage << "  •  " << RED << "SUPERBLOCK" << RESET;
+        }
         // Review finding 6: the lifetime counters mean "finds this run that still
         // exist". A find that reached neither the journal nor the sink is gone; counting
         // it would let the status line and dashboards claim value the disk never
@@ -1026,6 +1034,15 @@ int main(int argc, const char *const *argv)
                 if (submissionStats.confirmed > 0) {
                     stream << "  •  " << submissionStats.confirmed << " confirmed";
                 }
+                if (submissionStats.accepted_unconfirmed > 0) {
+                    stream << "  •  " << submissionStats.accepted_unconfirmed << " unconfirmed";
+                }
+                // The one indicator that must never disappear on this line: an outage means
+                // finds are piling up in the journal, not being lost — but the operator has
+                // to be able to SEE that at a glance.
+                if (submissionStats.pool_down) {
+                    stream << "  •  " << RED << "pool DOWN" << RESET;
+                }
             }
             stream << "  •  diff " << difficulty;
             if (!terminalUi) {
@@ -1148,8 +1165,11 @@ int main(int argc, const char *const *argv)
 
     setupRoutes(findJournal.get(), submissionManager.get());
     std::thread serverThread(startServer, dashboardBind);
-    Logger::logToConsole("Local console: " + getConsoleUrl(dashboardBind) +
-                         " (bind " + dashboardBind + ")\n");
+    Logger::logToConsole("Dashboard ready — open " + getConsoleUrl(dashboardBind) +
+                         " in a browser on your network"
+                         + (dashboardBind == "127.0.0.1" || dashboardBind == "::1"
+                                ? " (private: this machine only)"
+                                : "") + "\n");
     serverThread.detach();
     if(!donotupload){
         std::thread uploadStatThread(UploadDataPeriodically, 60);

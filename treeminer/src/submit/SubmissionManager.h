@@ -246,6 +246,10 @@ private:
     std::atomic<std::uint32_t> margin_kib_{0};
     std::function<void(std::uint32_t)> margin_cb_;   // guarded by state_mutex_
     std::atomic<std::int64_t> outage_started_ms_{0}; // 0 = /verify path is not open
+    // The span of the last outage, latched the instant the breaker leaves Open. The live
+    // outage_started_ms_ clock is reset before the breaker fully closes, so the RECOVERED
+    // log reads this latched value instead of a just-zeroed clock (would print "0s").
+    std::atomic<std::int64_t> last_outage_span_ms_{0};
     std::int64_t last_margin_eval_ms_ = 0;
     bool margin_eval_started_ = false;
 
