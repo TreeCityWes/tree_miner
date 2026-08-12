@@ -1,0 +1,8 @@
+# Direct runtime dependencies. Regenerate requirements.txt with:
+#   python -m piptools compile --generate-hashes server/requirements.in
+fastapi==0.115.6
+uvicorn==0.34.0
+pydantic==2.10.5
+aiosqlite==0.20.0
+eth-account==0.13.4
+PyJWT==2.10.1

@@ -531,6 +531,75 @@ def test_hash_api_matching_avoids_regex_in_hot_path():
     assert 'hash.find(kXuniPrefix)' in content
 
 
+def test_platform_report_waits_for_durable_capture():
+    # Security review finding 5: journal-first means the MQTT platform report must not
+    # run until the find is durable (journal append OR fallback sink), and must not run
+    # at all when both persistence paths failed.
+    main = read("src/main.cpp")
+
+    append_at = main.index("findJournal->append(payload)")
+    sink_at = main.index("fallbackSink.append(payload)")
+    report_at = main.index("globalPlatformManager->onBlockFound")
+    assert append_at < report_at
+    assert sink_at < report_at
+    # The report is gated on durable capture, not merely placed after it.
+    assert "durablyCaptured && globalPlatformManager" in main
+
+
+def test_double_persistence_failure_enters_fatal_state():
+    # Security review finding 6: journal append throwing AND the fallback sink failing
+    # means every future find would be destroyed on arrival — the miner must stop and
+    # exit nonzero so a supervisor restarts it.
+    common_h = read("src/MiningCommon.h")
+    common = read("src/MiningCommon.cpp")
+    main = read("src/main.cpp")
+
+    assert "std::atomic<bool> globalFatalDurabilityFailure" in common_h
+    assert "void declareFatalDurabilityFailure(const std::string& reason)" in common_h
+    assert "std::string fatalDurabilityFailureReason()" in common_h
+
+    # Declaring the fatal state records the reason, raises the flag, and stops mining.
+    declare_at = common.index("void declareFatalDurabilityFailure")
+    assert common.index("globalFatalDurabilityFailure.store(true)", declare_at) > declare_at
+    assert common.index("running.store(false)", declare_at) > declare_at
+
+    # The submit callback declares it on the double-failure path, and the console
+    # messages read as fatal, not handled.
+    assert "declareFatalDurabilityFailure(" in main
+    assert "write failed AND fallback sink failed" in main
+    assert "HALTING miner (exit nonzero for supervisor restart)" in main
+    assert "LOCAL SAVE FAILED; not queued. HALTING miner" in main
+
+    # main() translates the flag into a NONZERO exit after the mining threads join;
+    # nothing calls std::exit from the callback thread.
+    fatal_check_at = main.index("if (globalFatalDurabilityFailure.load())")
+    assert fatal_check_at > main.index("miningThread.join()")
+    assert "return 2;" in main[fatal_check_at:]
+
+
+def test_find_counters_require_durable_capture():
+    # Finding 6 corollary: the lifetime find counters may only count finds that exist
+    # somewhere durable (journal or sink); a lost find must not inflate them.
+    main = read("src/main.cpp")
+
+    gate_at = main.index("if (durablyCaptured)")
+    for counter in [
+        "globalNormalBlockCount++",
+        "globalSuperBlockCount++",
+        "globalXuniBlockCount++",
+    ]:
+        assert main.index(counter) > gate_at
+
+
+def test_stats_expose_fatal_durability_state():
+    stat = read("src/StatReporter.cpp")
+    assert '"fatalDurabilityFailure"' in stat
+    assert '"fatalDurabilityReason"' in stat
+    assert "fatalDurabilityFailureReason()" in stat
+    # The rig dashboard distinguishes a fatal stop from an operator stop.
+    assert '"fatal_durability_failure"' in stat
+
+
 def test_local_hash_service_is_separate_from_marketplace_server():
     service = read("server/hash_api/app.py")
     platform_server = read("server/server.py")

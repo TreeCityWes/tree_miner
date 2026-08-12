@@ -176,9 +176,11 @@ if(XENBLOCKS_BUILD_MINER)
 endif()
 if(TREEMINER_BUILD_TESTS)
     enable_testing()
+    add_subdirectory(tests/unit/mining_common)
     add_subdirectory(tests/unit/cpu)
     add_subdirectory(tests/unit/journal)
     add_subdirectory(tests/unit/submit)
+    add_subdirectory(tests/unit/platform)
     # Chaos gates (PLAN §6): needs both the journal and the submit library, so it is only
     # buildable where the journal target exists.
     if(TARGET treeminer_journal)
@@ -220,6 +222,7 @@ set(SOURCE_FILES
     src/WorkerReporter.cpp
     src/LeaseManager.cpp
     src/PlatformManager.cpp
+    src/platform/CommandEnvelope.cpp
     src/hashapi/CpuHashBackend.cpp
     src/hashapi/CudaHashBackend.cpp
     src/hashapi/HashApiCli.cpp

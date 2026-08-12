@@ -10,6 +10,22 @@ Install runtime and development dependencies:
 python -m pip install -r requirements-dev.txt
 ```
 
+`requirements-dev.txt` and `server/requirements.txt` are fully resolved lock
+files with artifact hashes. Edit the corresponding `.in` file, then regenerate
+both locks with the pinned compiler version:
+
+```bash
+python -m pip install pip-tools==7.5.0
+python -m piptools compile --strip-extras --generate-hashes \
+  --output-file=server/requirements.txt server/requirements.in
+python -m piptools compile --strip-extras --generate-hashes \
+  --output-file=requirements-dev.txt requirements-dev.in
+```
+
+CI installs the development lock with `--require-hashes`. The vcpkg registry is
+likewise fixed to the baseline in `vcpkg-configuration.json`; update that commit
+intentionally when refreshing C++ dependencies.
+
 If the active Python environment cannot read user site-packages, install into the repository-local ignored dependency directory:
 
 ```bash

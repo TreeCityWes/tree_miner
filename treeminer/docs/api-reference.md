@@ -1,5 +1,11 @@
 # XenBlocks Mining Platform API Reference
 
+> **Authentication update:** `POST /api/auth/verify` sets a Secure, HttpOnly,
+> SameSite=Strict `xb_session` cookie and does not return the JWT. Use
+> `POST /api/auth/logout` to clear it. The unauthenticated
+> `POST /api/auth/login` API-key recovery route has been removed; API keys are
+> only returned when provisioned at registration.
+
 Base URL: `http://<host>:<port>`
 
 ---
@@ -12,14 +18,14 @@ The platform supports two authentication flows:
 
 1. `GET /api/auth/nonce?address=0x...` to obtain a nonce.
 2. Sign the message `Sign this message to authenticate with XenBlocks.\n\nNonce: {nonce}` with your wallet.
-3. `POST /api/auth/verify` with address, signature, nonce to receive a JWT.
-4. Pass `Authorization: Bearer <jwt>` on subsequent requests.
+3. `POST /api/auth/verify` with address, signature, nonce to establish the cookie session.
+4. Same-origin browser requests send the cookie automatically.
 
 JWT expires after **24 hours**. Nonce expires after **5 minutes**.
 
-### Flow 2 -- API Key (Legacy)
+### Flow 2 -- Provisioned API Key
 
-Pass `X-API-Key: <key>` header. Obtain the key via `/api/auth/register` or `/api/auth/login`.
+Pass `X-API-Key: <key>` header. Keys are returned when provisioned at registration; there is no unauthenticated recovery endpoint.
 
 ### Role-Based Access
 
@@ -149,39 +155,13 @@ Register a new account (legacy API-key flow).
 
 ---
 
-### `POST /api/auth/login`
+### `POST /api/auth/logout`
 
-Login to an existing account and retrieve its API key.
+Expire the browser session cookie (`204 No Content`). The former account-ID-only API-key recovery endpoint was removed.
 
 **Auth:** None
 
-**Request Body:**
-
-```json
-{
-  "account_id": "my-provider-1"
-}
-```
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `account_id` | `string` | Yes | Existing account identifier. |
-
-**Response `200`:**
-
-```json
-{
-  "account_id": "my-provider-1",
-  "role": "provider",
-  "api_key": "3f8a...c9d1"
-}
-```
-
-**Errors:**
-
-| Code | Condition |
-|------|-----------|
-| `404` | Account not found. |
+No request body. Returns `204 No Content` and an expired `xb_session` cookie.
 
 ---
 

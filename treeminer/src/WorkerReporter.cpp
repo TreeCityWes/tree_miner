@@ -48,15 +48,16 @@ bool WorkerReporter::sendHeartbeat(float total_hashrate,
 								   int active_gpus,
 								   int accepted_blocks)
 {
+	const auto identity = miningIdentitySnapshot();
 	nlohmann::json payload = {
 		{"worker_id", machineId},
 		{"hashrate", total_hashrate},
 		{"active_gpus", active_gpus},
 		{"accepted_blocks", accepted_blocks},
 		{"difficulty", globalDifficulty.load()},
-		{"address", globalUserAddress},
-		{"prefix", globalSelfMiningPrefix},
-		{"block_pattern", globalTestBlockPattern},
+		{"address", identity->userAddress},
+		{"prefix", identity->selfMiningPrefix},
+		{"block_pattern", identity->testBlockPattern},
 		{"uptime_sec", std::chrono::duration_cast<std::chrono::seconds>(
 			std::chrono::system_clock::now() - start_time).count()},
 		{"timestamp", currentTimestamp()}

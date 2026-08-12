@@ -72,13 +72,15 @@ void uploadGpuInfos()
             std::this_thread::sleep_for(std::chrono::minutes(5));
             continue;
         }
-        std::string infoJson = vectorToJson(machineId, globalUserAddress, gpuInfos).dump(-1);
+        std::string infoJson = vectorToJson(
+            machineId, miningIdentitySnapshot()->userAddress, gpuInfos).dump(-1);
         std::this_thread::sleep_for(std::chrono::minutes(5));
     }
 }
 
 std::string getGpuStatsJson() {
     nlohmann::json result;
+	const auto identity = miningIdentitySnapshot();
     nlohmann::json gpuArray = nlohmann::json::array();
     float totalHashrate = 0.0;
 
@@ -149,6 +151,17 @@ std::string getGpuStatsJson() {
         }
     }
 
+    // --- Fatal durability state (review finding 6) ---
+    // Surfaced on the health endpoint so a fleet dashboard can tell "restart loop
+    // because the disk is broken" apart from a network outage. Emitted outside the
+    // stats-provider block above: the flag must be visible even before the submission
+    // layer exists. Single load so the boolean and the reason cannot disagree.
+    const bool fatalDurability = globalFatalDurabilityFailure.load();
+    result["fatalDurabilityFailure"] = fatalDurability;
+    if (fatalDurability) {
+        result["fatalDurabilityReason"] = fatalDurabilityFailureReason();
+    }
+
     return result.dump();
 }
 
@@ -183,13 +196,19 @@ nlohmann::json getMinerDashboardData() {
     const auto uptime = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::system_clock::now() - start_time).count();
     const double cpuHashrate = globalCpuHashrate.load();
+    // One immutable identity snapshot per response, same as getGpuStatsJson above, so a
+    // concurrent MQTT identity update cannot tear the address mid-serialization.
+    const auto identity = miningIdentitySnapshot();
     result["identity"] = {
         {"name", globalCustomName.empty() ? "TreeMiner" : globalCustomName},
         {"machine_id", machineId},
-        {"address", globalUserAddress}
+        {"address", identity->userAddress}
     };
     result["engine"] = {
+        // A false `running` with `fatal_durability_failure` true means the miner is
+        // shutting down because it cannot persist finds — not an operator stop.
         {"running", running.load()},
+        {"fatal_durability_failure", globalFatalDurabilityFailure.load()},
         {"uptime_seconds", uptime},
         {"difficulty", globalDifficulty.load()},
         {"gpu_devices", devices.size()},
@@ -265,7 +284,7 @@ nlohmann::json getStatData() {
     }
 
     result["machineId"] = machineId;
-    result["minerAddr"] = globalUserAddress;
+    result["minerAddr"] = miningIdentitySnapshot()->userAddress;
     std::ostringstream stream_totalHashrate;
     stream_totalHashrate << std::fixed << std::setprecision(2) << totalHashrate;
     result["totalHashrate"] = stream_totalHashrate.str();

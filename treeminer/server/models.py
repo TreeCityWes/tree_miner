@@ -35,15 +35,12 @@ class ControlRequest(BaseModel):
     config: dict = {}
 
 
+# NOTE: no `balance` field — starting balance is a server-side decision.
+# Accepting it from the client let anyone register with arbitrary funds.
 class RegisterRequest(BaseModel):
     account_id: str
     role: str
     eth_address: str = ""
-    balance: float = 0.0
-
-
-class LoginRequest(BaseModel):
-    account_id: str
 
 
 class WalletVerifyRequest(BaseModel):

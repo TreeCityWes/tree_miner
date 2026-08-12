@@ -106,9 +106,13 @@ python3 -m pytest tests/integration/test_cpp_worker.py -v --tb=short
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/auth/register` | Register a new account (provider or consumer). Returns an API key. |
-| `POST` | `/api/auth/login` | Get or regenerate API key for an existing account |
-| `GET` | `/api/auth/me` | Get current account info (requires `X-API-Key` header) |
+| `GET` | `/api/auth/nonce` | Create a short-lived wallet-signing challenge. |
+| `POST` | `/api/auth/verify` | Verify the wallet signature and set a Secure, HttpOnly, SameSite=Strict session cookie. |
+| `POST` | `/api/auth/logout` | Clear the browser session cookie. |
+| `POST` | `/api/auth/register` | Register a new account (provider or consumer). Returns an API key once. |
+| `GET` | `/api/auth/me` | Get current account info (session cookie or `X-API-Key`). |
+
+The account-ID-only legacy login endpoint was removed because it disclosed long-lived API keys without proof of identity. Browser clients must use wallet signature authentication. Start production deployments with `--production --admin-key <secret>` (or `XENMINER_ADMIN_KEY`); production mode refuses the documented test key.
 
 ### Consumer Endpoints (auth optional for backward compatibility)
 

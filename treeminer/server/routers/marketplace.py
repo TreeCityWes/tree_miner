@@ -2,10 +2,10 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from starlette.requests import Request
 
-from server.deps import get_server
+from server.deps import get_server, require_auth
 from server.models import PricingRequest
 
 router = APIRouter()
@@ -96,15 +96,13 @@ async def get_worker_reputation(request: Request, worker_id: str):
 
 @router.put("/api/workers/{worker_id}/pricing")
 async def set_worker_pricing(
-    request: Request, worker_id: str, req: PricingRequest, x_api_key: str = Header(default=""),
+    request: Request,
+    worker_id: str,
+    req: PricingRequest,
+    caller: dict = Depends(require_auth("provider")),
 ):
     srv = get_server(request)
-    caller = None
-    if srv.auth and x_api_key:
-        caller = await srv.auth.resolve_account(x_api_key)
-    if caller and caller["role"] not in ("provider", "admin"):
-        raise HTTPException(status_code=403, detail="Provider account required")
-    if caller and caller["role"] == "provider" and caller["account_id"] != worker_id:
+    if caller["role"] == "provider" and caller["account_id"] != worker_id:
         raise HTTPException(status_code=403, detail="You can only set pricing for your own worker")
     try:
         result = await srv.pricing.set_pricing(

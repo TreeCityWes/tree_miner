@@ -200,9 +200,11 @@ void SubmissionManager::start() {
 }
 
 void SubmissionManager::stop() {
-    if (!running_.exchange(false)) {
-        return;
-    }
+    // No early-out on "already not running": after a fatal exception (finding 8) the
+    // loop clears running_ itself, but the std::thread object is still joinable — an
+    // exchange-guarded early return here would skip the join and let the destructor
+    // hit std::terminate on a joinable thread. Always fall through to the join.
+    running_.store(false);
     {
         std::lock_guard<std::mutex> lk(wake_mutex_);
     }
@@ -217,15 +219,52 @@ void SubmissionManager::notifyFindAppended() {
 }
 
 void SubmissionManager::threadLoop_() {
-    while (running_.load()) {
-        StepResult r = StepResult::Idle;
-        r = runOnce();
-        std::unique_lock<std::mutex> lk(wake_mutex_);
-        const auto wait_ms = (r == StepResult::Idle) ? cfg_.idle_poll_ms
-                                                     : std::min<std::int64_t>(cfg_.idle_poll_ms, 50);
-        wake_cv_.wait_for(lk, std::chrono::milliseconds(wait_ms),
-                          [this] { return !running_.load(); });
+    // runOnce() is the exception boundary (finding 8) and never throws; the belt-and-
+    // braces try/catch here covers the residual loop machinery (lock/wait) so that NO
+    // path out of this thread function can reach std::terminate.
+    try {
+        while (running_.load()) {
+            StepResult r = StepResult::Idle;
+            r = runOnce();
+            std::unique_lock<std::mutex> lk(wake_mutex_);
+            const auto wait_ms = (r == StepResult::Idle) ? cfg_.idle_poll_ms
+                                                         : std::min<std::int64_t>(cfg_.idle_poll_ms, 50);
+            wake_cv_.wait_for(lk, std::chrono::milliseconds(wait_ms),
+                              [this] { return !running_.load(); });
+        }
+    } catch (const std::exception& e) {
+        handleFatal_(std::string("submission thread loop: ") + e.what());
+    } catch (...) {
+        handleFatal_("submission thread loop: unknown exception");
     }
+}
+
+void SubmissionManager::handleFatal_(const std::string& what) {
+    if (fatal_.exchange(true)) {
+        return;  // first exception wins; later ones (there should be none) are dropped
+    }
+    // A submission layer that cannot touch its journal must not spin: every further step
+    // would fail the same way while looking "alive" to the operator. Stop the loop; the
+    // thread exits cleanly and remains joinable (stop() still works, see above).
+    running_.store(false);
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        ++metrics_.thread_loop_exceptions;
+    }
+    ConsoleLog::event(ConsoleLog::Level::Error, "SUBMIT",
+                      "FATAL | submission loop halted — journal or step failure, finds are "
+                      "still durable on disk but will NOT drain until restart | " + what);
+    FatalCallback cb;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        cb = fatal_cb_;
+    }
+    if (cb) {
+        cb(what);
+    }
+    // Wake any waiter promptly (e.g. runOnce driven from another thread while the loop
+    // thread sits in wait_for) so the halt is observed without an idle-poll delay.
+    wake_cv_.notify_all();
 }
 
 // --- difficulty + server clock ---
@@ -243,6 +282,11 @@ void SubmissionManager::setOutcomeCallback(OutcomeCallback cb) {
 void SubmissionManager::setNetworkStateCallback(NetworkStateCallback cb) {
     std::lock_guard<std::mutex> lk(state_mutex_);
     network_state_cb_ = std::move(cb);
+}
+
+void SubmissionManager::setFatalCallback(FatalCallback cb) {
+    std::lock_guard<std::mutex> lk(state_mutex_);
+    fatal_cb_ = std::move(cb);
 }
 
 void SubmissionManager::emitOutcome_(const FindRecord& record,
@@ -450,9 +494,80 @@ std::string SubmissionManager::backoffTimeIso_(std::int32_t attempt_count,
     return isoUtc(wall_() + delay);
 }
 
+// --- confirmation body validation (finding 4) ---
+
+SubmissionManager::ConfirmBodyCheck SubmissionManager::confirmationMatches(
+        const FindRecord& record, const std::string& body) {
+    // gpage.py:331-364 — a /get_block 200 body IS the stored row:
+    //   {block_id, hash_to_verify, key, account, created_at}
+    // Over plaintext HTTP a captive portal / transparent proxy / MITM can answer 200 to
+    // anything; treating transport-ok + 200 as proof would let it permanently suppress
+    // resubmission of real finds. So the body must positively identify OUR row:
+    //   1. it parses as a JSON object with a scalar "key", and
+    //   2. that key is byte-equal to the record's key (keys are lowercase 64-hex we
+    //      generated ourselves and echo verbatim, so byte equality is the right test —
+    //      any normalization here would only widen what an attacker may return), and
+    //   3. if the row carries hash_to_verify, it is byte-equal to the record's immutable
+    //      hash (the key is derived from the hash, so a mismatch means the server holds
+    //      a DIFFERENT find under our key — credit theft or corruption, never ackable).
+    auto key = extractJsonField(body, "key");
+    if (!key) {
+        return ConfirmBodyCheck::Malformed;
+    }
+    if (*key != record.payload.key) {
+        return ConfirmBodyCheck::KeyMismatch;
+    }
+    if (auto hash = extractJsonField(body, "hash_to_verify")) {
+        if (*hash != record.payload.hash_to_verify) {
+            return ConfirmBodyCheck::HashMismatch;
+        }
+    }
+    return ConfirmBodyCheck::Confirmed;
+}
+
+namespace {
+
+// One reason fragment per rejected-body case, appended to the record's status_reason so
+// the journal shows WHY a 200 was not trusted. All three outcomes keep the record
+// AcceptedUnconfirmed with the normal backoff: never Acked (nothing was proven), never
+// Pending (only a real 404 proves absence — the server may genuinely hold the row).
+const char* confirmRejectReason(SubmissionManager::ConfirmBodyCheck check) {
+    switch (check) {
+        case SubmissionManager::ConfirmBodyCheck::KeyMismatch:
+            return "/get_block 200 body describes a different key — not a confirmation "
+                   "of this record, remaining unconfirmed";
+        case SubmissionManager::ConfirmBodyCheck::HashMismatch:
+            return "/get_block 200 has our key but a DIFFERENT hash_to_verify — refusing "
+                   "to ack, remaining unconfirmed";
+        default:
+            return "/get_block 200 body malformed or missing key — untrusted, remaining "
+                   "unconfirmed";
+    }
+}
+
+}  // namespace
+
 // --- the scheduling step ---
 
 SubmissionManager::StepResult SubmissionManager::runOnce() {
+    // Finding 8: this is the exception boundary between the journal/transport machinery
+    // and the thread function. A JournalError from recordAttempt/counts/recordDifficulty/
+    // unpark used to escape threadLoop_ and std::terminate the whole miner; now the first
+    // exception halts the drain loop cleanly (handleFatal_) and later calls are inert.
+    if (fatal_.load()) {
+        return StepResult::Idle;
+    }
+    try {
+        return runStep_();
+    } catch (const std::exception& e) {
+        handleFatal_(std::string("submission step: ") + e.what());
+    } catch (...) {
+        handleFatal_("submission step: unknown exception");
+    }
+    return StepResult::Idle;
+}
+
+SubmissionManager::StepResult SubmissionManager::runStep_() {
     // Headroom is re-evaluated first so the outage clock advances even on steps that do no
     // network work at all (an OPEN breaker whose probe is not yet due still ages the outage).
     updateMargin_();
@@ -573,17 +688,40 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         }
     }
 
-    // Confirmation-aware acks: 200 and duplicates are only Acked once /get_block agrees.
+    // Confirmation-aware acks: 200 and duplicates are only Acked once /get_block agrees —
+    // and "agrees" means the 200 BODY describes this record (finding 4), not merely that
+    // some intermediary answered 200 over plaintext HTTP.
     std::optional<std::string> next_attempt;
     if (c.needs_lookup_confirmation) {
         TransportResult conf = transport_.confirm(rec->payload.key);
         trackServerDate_(conf);
-        if (conf.transport_ok && conf.http_status == 200) {
+        const ConfirmBodyCheck body_check =
+            (conf.transport_ok && conf.http_status == 200)
+                ? confirmationMatches(*rec, conf.body)
+                : ConfirmBodyCheck::Malformed;  // unused unless status == 200
+        if (conf.transport_ok && conf.http_status == 200 &&
+            body_check == ConfirmBodyCheck::Confirmed) {
             c.next_status = FindStatus::Acked;
             c.needs_lookup_confirmation = false;
-            c.reason += "; confirmed via /get_block";
+            c.reason += "; confirmed via /get_block (body matches key)";
             std::lock_guard<std::mutex> lk(state_mutex_);
             ++metrics_.reconciled_via_get_block;
+        } else if (conf.transport_ok && conf.http_status == 200) {
+            // A 200 whose body does not prove our row: stay AcceptedUnconfirmed with the
+            // normal backoff and let the confirmStep_ retry re-ask later. A hash mismatch
+            // is the serious flavor — the server (or something between us and it) holds a
+            // different find under our key — so it is additionally logged at Error.
+            if (body_check == ConfirmBodyCheck::HashMismatch) {
+                ConsoleLog::event(ConsoleLog::Level::Error, "CONFIRM",
+                                  "hash_to_verify MISMATCH on /get_block for key=" +
+                                  rec->payload.key +
+                                  " — server row differs from our immutable find; NOT "
+                                  "acking (possible interception or server corruption)");
+            }
+            c.reason += std::string("; ") + confirmRejectReason(body_check);
+            next_attempt = backoffTimeIso_(rec->attempt_count, std::nullopt);
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.confirm_body_rejected;
         } else if (conf.transport_ok && conf.http_status == 404) {
             // The lying-200 (gpage.py:492-494,515): the server said saved, the lookup says
             // absent. Resubmit — replay is idempotent thanks to the UNIQUE key.
@@ -760,11 +898,34 @@ SubmissionManager::StepResult SubmissionManager::confirmStep_() {
 
         Classification c;
         std::optional<std::string> next_attempt;
-        if (conf.transport_ok && conf.http_status == 200) {
+        const ConfirmBodyCheck body_check =
+            (conf.transport_ok && conf.http_status == 200)
+                ? confirmationMatches(rec, conf.body)
+                : ConfirmBodyCheck::Malformed;  // unused unless status == 200
+        if (conf.transport_ok && conf.http_status == 200 &&
+            body_check == ConfirmBodyCheck::Confirmed) {
             c.next_status = FindStatus::Acked;
-            c.reason = "confirmed via /get_block (retry)";
+            c.reason = "confirmed via /get_block (retry, body matches key)";
             std::lock_guard<std::mutex> lk(state_mutex_);
             ++metrics_.reconciled_via_get_block;
+        } else if (conf.transport_ok && conf.http_status == 200) {
+            // Same rule as the initial confirmation (finding 4): an unproven 200 keeps
+            // the record AcceptedUnconfirmed with per-record backoff — never Acked,
+            // never demoted to Pending.
+            if (body_check == ConfirmBodyCheck::HashMismatch) {
+                ConsoleLog::event(ConsoleLog::Level::Error, "CONFIRM",
+                                  "hash_to_verify MISMATCH on /get_block for key=" +
+                                  rec.payload.key +
+                                  " — server row differs from our immutable find; NOT "
+                                  "acking (possible interception or server corruption)");
+            }
+            c.next_status = FindStatus::AcceptedUnconfirmed;
+            c.reason = confirmRejectReason(body_check);
+            next_attempt = backoffTimeIso_(rec.attempt_count, std::nullopt);
+            {
+                std::lock_guard<std::mutex> lk(state_mutex_);
+                ++metrics_.confirm_body_rejected;
+            }
         } else if (conf.transport_ok && conf.http_status == 404) {
             // The lying-200, caught on retry: the row never became durable server-side.
             c.next_status = FindStatus::Pending;

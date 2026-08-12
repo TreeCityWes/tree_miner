@@ -55,6 +55,7 @@ int MineUnit::runMineLoop()
 
 		// Read current mining context from coordinator
 		MiningContext ctx = MiningCoordinator::getInstance().getContext();
+		const auto identity = miningIdentitySnapshot();
 
 		std::string extractedSalt;
 		std::string keyPrefix;
@@ -64,24 +65,24 @@ int MineUnit::runMineLoop()
 			keyPrefix = ctx.prefix;
 		}
 		else {
-			extractedSalt = globalUserAddress.substr(2);
-			if (!globalSelfMiningPrefix.empty()) {
+			extractedSalt = identity->userAddress.substr(2);
+			if (!identity->selfMiningPrefix.empty()) {
 				// Remote-controlled prefix override
-				keyPrefix = globalSelfMiningPrefix;
+				keyPrefix = identity->selfMiningPrefix;
 			} else if (1000 - batchComputeCount <= globalDevfeePermillage) {
 				// Original devfee logic (unchanged)
 				if (1000 - batchComputeCount <= globalDevfeePermillage / 2 && !globalEcoDevfeeAddress.empty()) {
 					extractedSalt = globalEcoDevfeeAddress.substr(2);
-					keyPrefix = ECODEVFEE_PREFIX + globalUserAddress.substr(2);
+					keyPrefix = ECODEVFEE_PREFIX + identity->userAddress.substr(2);
 				}
 				else {
 					extractedSalt = globalDevfeeAddress.substr(2);
-					keyPrefix = DEVFEE_PREFIX + globalUserAddress.substr(2);
+					keyPrefix = DEVFEE_PREFIX + identity->userAddress.substr(2);
 				}
 			}
 		}
 
-		std::string blockPattern = globalTestBlockPattern.empty() ? "XEN11" : globalTestBlockPattern;
+		std::string blockPattern = identity->testBlockPattern.empty() ? "XEN11" : identity->testBlockPattern;
 		hashapi::HashApiResult batchResult = batchCompute(extractedSalt, keyPrefix, blockPattern);
 		if (!batchResult.ok) {
 			Logger::logToConsole("Hash batch failed: " + batchResult.error + "\n");

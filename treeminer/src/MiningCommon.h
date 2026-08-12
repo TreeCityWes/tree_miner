@@ -7,6 +7,7 @@
 #include <functional>
 #include <string>
 #include <map>
+#include <memory>
 #include <chrono>
 
 #include "submit/CircuitBreaker.h"
@@ -35,7 +36,20 @@ struct MiningContext {
 	std::string lease_id;      // platform lease identifier
 };
 
-extern std::string globalUserAddress;
+// Remotely-updatable mining identity. Readers take one immutable snapshot so a
+// batch cannot observe a mixture of values while MQTT applies a configuration
+// update. atomic_load on the shared snapshot keeps the mining hot path free of
+// the writer mutex.
+struct MiningIdentityConfig {
+	std::string userAddress;
+	std::string selfMiningPrefix;
+	std::string testBlockPattern;
+};
+
+std::shared_ptr<const MiningIdentityConfig> miningIdentitySnapshot();
+void setMiningUserAddress(std::string address);
+void setSelfMiningPrefix(std::string prefix);
+void setTestBlockPattern(std::string pattern);
 extern std::string globalDevfeeAddress;
 extern std::string globalEcoDevfeeAddress;
 extern std::atomic<int> globalDevfeePermillage; // per 1000
@@ -59,6 +73,21 @@ extern std::mutex mtx;
 extern std::atomic<bool> running;
 extern std::mutex coutmtx;
 
+// --- Fatal durability state (security review finding 6) ---
+// Raised when a find could be persisted by NEITHER the SQLite journal NOR the fallback
+// sink. From that moment every future find would be destroyed on arrival, so continuing
+// to mine is strictly worse than dying: declareFatalDurabilityFailure() records the
+// reason, stops the mining loops via `running`, and main() translates the flag into a
+// NONZERO process exit so a supervisor (systemd Restart=always) restarts the miner
+// against a hopefully-recovered disk. std::exit is deliberately never called from the
+// mining callback thread.
+extern std::atomic<bool> globalFatalDurabilityFailure;
+// First declaration wins: the first failure is the one that diagnosed the disk; later
+// ones are echoes. Thread-safe; callable from any mining/callback thread.
+void declareFatalDurabilityFailure(const std::string& reason);
+// Empty until the flag is raised. Safe from the stats threads (mutex-guarded copy).
+std::string fatalDurabilityFailureReason();
+
 extern std::atomic<int> globalNormalBlockCount;
 extern std::atomic<int> globalSuperBlockCount;
 extern std::atomic<int> globalXuniBlockCount;
@@ -68,8 +97,6 @@ extern std::chrono::system_clock::time_point start_time;
 extern std::atomic<long> globalHashCount;
 
 extern std::string globalRpcLink;
-extern std::string globalTestBlockPattern;
-extern std::string globalSelfMiningPrefix;
 extern std::size_t globalMaxBatchSize;
 extern std::size_t globalCudaStreamsPerDevice;
 

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <ctime>
+#include <memory>
+#include <utility>
 
 std::atomic<bool> running = true;
 std::atomic<int> globalDifficulty = 1727;
@@ -25,7 +27,89 @@ int effectiveMiningDifficulty() {
 }
 std::mutex coutmtx;
 
-std::string globalUserAddress = "0x123456789";
+std::atomic<bool> globalFatalDurabilityFailure{false};
+
+namespace {
+// Mutex-guarded string rather than an atomic pointer to a fixed literal: the reason must
+// carry the live SQLite/errno text from the failure site, and this lock is touched only
+// on declaration and on stats reads — never on the mining hot path.
+std::mutex fatalDurabilityReasonMutex;
+std::string fatalDurabilityReason;
+} // namespace
+
+void declareFatalDurabilityFailure(const std::string& reason)
+{
+    {
+        std::lock_guard<std::mutex> lock(fatalDurabilityReasonMutex);
+        // First failure wins. A second double-failure (a later find on the same broken
+        // disk) would overwrite the original diagnosis with an echo of it.
+        if (fatalDurabilityReason.empty()) {
+            fatalDurabilityReason =
+                reason.empty() ? "unspecified durability failure" : reason;
+        }
+    }
+    // Publish the reason BEFORE raising the flag so any reader that observes the flag is
+    // guaranteed to find a complete reason string behind it.
+    globalFatalDurabilityFailure.store(true);
+    // Stop mining now: the GPU device loops (runMiningOnDevice -> MineUnit::runMineLoop)
+    // and the CPU workers' should_continue predicate all poll `running`, and main()'s
+    // wait loop exits on it. A miner that cannot persist finds is destroying every
+    // future find it makes; main() turns the flag into a nonzero exit for the supervisor.
+    running.store(false);
+}
+
+std::string fatalDurabilityFailureReason()
+{
+    std::lock_guard<std::mutex> lock(fatalDurabilityReasonMutex);
+    return fatalDurabilityReason;
+}
+
+namespace {
+std::shared_ptr<const MiningIdentityConfig> miningIdentity =
+	std::make_shared<const MiningIdentityConfig>(
+		MiningIdentityConfig{"0x123456789", "", ""});
+std::mutex miningIdentityWriteMutex;
+
+template <typename Update>
+void updateMiningIdentity(Update&& update)
+{
+	std::lock_guard<std::mutex> lock(miningIdentityWriteMutex);
+	auto next = std::make_shared<MiningIdentityConfig>(
+		*std::atomic_load_explicit(&miningIdentity, std::memory_order_acquire));
+	update(*next);
+	std::atomic_store_explicit(
+		&miningIdentity,
+		std::shared_ptr<const MiningIdentityConfig>(std::move(next)),
+		std::memory_order_release);
+}
+} // namespace
+
+std::shared_ptr<const MiningIdentityConfig> miningIdentitySnapshot()
+{
+	return std::atomic_load_explicit(&miningIdentity, std::memory_order_acquire);
+}
+
+void setMiningUserAddress(std::string address)
+{
+	updateMiningIdentity([&](MiningIdentityConfig& config) {
+		config.userAddress = std::move(address);
+	});
+}
+
+void setSelfMiningPrefix(std::string prefix)
+{
+	updateMiningIdentity([&](MiningIdentityConfig& config) {
+		config.selfMiningPrefix = std::move(prefix);
+	});
+}
+
+void setTestBlockPattern(std::string pattern)
+{
+	updateMiningIdentity([&](MiningIdentityConfig& config) {
+		config.testBlockPattern = std::move(pattern);
+	});
+}
+
 std::string globalDevfeeAddress = "0x24691E54aFafe2416a8252097C9Ca67557271475";
 std::string globalEcoDevfeeAddress = "";
 std::atomic<int> globalDevfeePermillage = 1; // per 1000
@@ -46,7 +130,6 @@ std::atomic<long> globalHashCount = 0;
 std::chrono::system_clock::time_point start_time = std::chrono::system_clock::now();
 
 std::string globalRpcLink = "http://xenblocks.io";
-std::string globalSelfMiningPrefix;
 std::size_t globalMaxBatchSize = 0; // 0 = auto (use all free GPU memory)
 std::size_t globalCudaStreamsPerDevice = 1;
 std::atomic<std::size_t> globalQueuedXnm{0};

@@ -1,11 +1,15 @@
 // SubmissionManager unit tests — driven synchronously through runOnce() with a scripted
-// transport, the in-memory FakeJournal, and fully controlled clocks (no sleeping, no I/O).
+// transport, the in-memory FakeJournal, and fully controlled clocks (no sleeping, no I/O;
+// the one threaded test below waits on a future the fatal callback fulfills).
 
+#include <chrono>
 #include <deque>
+#include <future>
 #include <string>
 #include <vector>
 
 #include "FakeJournal.h"
+#include "journal/FindJournal.h"  // JournalError only (header-only; nothing linked)
 #include "submit/SubmissionManager.h"
 #include "test_framework.h"
 
@@ -97,8 +101,29 @@ SubmissionManager::Config testConfig() {
 
 const char* kOk200 = R"({"message": "Hash verified successfully and block saved."})";
 const char* kDup400 = R"({"message": "Block already exists, continue"})";
-const char* kBlockRow =
-    R"({"account": "0x1111111111111111111111111111111111111111", "block_id": 7, "created_at": "2026-01-01 00:00:00", "hash_to_verify": "x", "key": "k"})";
+
+// The realistic /get_block 200 body for a given record: gpage.py:331-364 returns the
+// stored row itself, so the key and hash_to_verify must be THIS record's values. The
+// manager now validates that (finding 4), so a fixture with placeholder key "k" would be
+// rejected exactly like an attacker's fabricated 200 — the fixture must earn the ack.
+std::string blockRow(const FoundPayload& p) {
+    return std::string(R"({"account": ")") + p.account +
+           R"(", "block_id": 7, "created_at": "2026-01-01 00:00:00", "hash_to_verify": ")" +
+           p.hash_to_verify + R"(", "key": ")" + p.key + R"("})";
+}
+
+// FakeJournal whose recordAttempt fails like a broken SQLite volume would: the drain
+// thread's exception boundary (finding 8) must contain this, not the process.
+class ThrowingJournal : public FakeJournal {
+public:
+    void recordAttempt(std::int64_t, const treeminer::Classification&, std::optional<int>,
+                       const std::string&, const std::optional<std::string>&,
+                       const std::string&) override {
+        ++throw_count;
+        throw treeminer::JournalError("disk I/O error (simulated)");
+    }
+    int throw_count = 0;
+};
 
 }  // namespace
 
@@ -150,9 +175,10 @@ int main() {
         m.setOutcomeCallback([&](const auto&, const auto& classification, auto) {
             outcomes.push_back(classification.next_status);
         });
-        auto id = j.append(payload("aa11", FindKind::XEN11, 100000));
+        const auto p = payload("aa11", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(id).status == FindStatus::Acked);
         CHECK(j.record(id).confirmed_at.has_value());
@@ -172,7 +198,8 @@ int main() {
         Clocks clk;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        auto id = j.append(payload("aa22", FindKind::XEN11, 100000));
+        const auto p = payload("aa22", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         t.submit_queue.push_back(ok(200, kOk200));
         t.confirm_queue.push_back(ok(404, R"({"error": "Data not found for provided key"})"));
         CHECK(m.runOnce() == StepResult::Submitted);
@@ -182,7 +209,7 @@ int main() {
         // Second pass (after backoff) resubmits and this time it sticks.
         clk.advance(10000);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(id).status == FindStatus::Acked);
         CHECK_EQ(m.metrics().submitted, 2u);
@@ -197,9 +224,10 @@ int main() {
         Clocks clk;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        auto id = j.append(payload("aa33", FindKind::XEN11, 100000));
+        const auto p = payload("aa33", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         t.submit_queue.push_back(ok(400, kDup400));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(id).status == FindStatus::Acked);
     }
@@ -281,13 +309,14 @@ int main() {
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
         CHECK(!m.serverClockOffsetMs().has_value());
-        auto id = j.append(payload("aa77", FindKind::XEN11, 100000));
+        const auto p = payload("aa77", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         TransportResult r = ok(200, kOk200);
         // Server is 90 s ahead of our wall clock.
         r.date_header = SubmissionManager::isoUtc(0);  // placeholder, replaced below
         r.date_header = "Thu, 01 Jan 2026 00:01:30 GMT";
         t.submit_queue.push_back(r);
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(m.serverClockOffsetMs().has_value());
         CHECK_EQ(m.serverClockOffsetMs().value_or(0), 90000LL);
@@ -306,7 +335,8 @@ int main() {
         std::vector<CircuitBreaker::State> network_states;
         m.setNetworkStateCallback(
             [&](CircuitBreaker::State state) { network_states.push_back(state); });
-        auto id = j.append(payload("bb11", FindKind::XEN11, 100000));
+        const auto p = payload("bb11", FindKind::XEN11, 100000);
+        auto id = j.append(p);
 
         for (int i = 0; i < 3; ++i) {
             if (i > 0) {
@@ -339,7 +369,7 @@ int main() {
         // HALF_OPEN: one real queued submission; success closes and drain restarts at 1/s.
         clk.advance(60000);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(m.breakerState() == CircuitBreaker::State::Closed);
         CHECK(network_states.back() == CircuitBreaker::State::Closed);
@@ -356,16 +386,18 @@ int main() {
         clk.wall = 1767227400000LL;  // window closed; XEN11 only
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        j.append(payload("cc11", FindKind::XEN11, 100000));
-        j.append(payload("cc22", FindKind::XEN11, 100000));
+        const auto p1 = payload("cc11", FindKind::XEN11, 100000);
+        const auto p2 = payload("cc22", FindKind::XEN11, 100000);
+        j.append(p1);
+        j.append(p2);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p1)));
         CHECK(m.runOnce() == StepResult::Submitted);
         // Immediately after: pacing gate holds (rate is finite).
         CHECK(m.runOnce() == StepResult::Idle);
         clk.advance(1000);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p2)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(2));
     }
@@ -401,9 +433,10 @@ int main() {
         j.append(payload("xuni-1", FindKind::XUNI, 100000));
         j.append(payload("xuni-2", FindKind::XUNI, 100000));
         j.append(payload("xuni-3", FindKind::XUNI, 100000));
-        const auto xen_id = j.append(payload("xen-1", FindKind::XEN11, 100000));
+        const auto xen = payload("xen-1", FindKind::XEN11, 100000);
+        const auto xen_id = j.append(xen);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(xen)));
 
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK_STREQ(t.submitted_keys.front(), "xen-1");
@@ -448,9 +481,10 @@ int main() {
         clk.wall = 1767227400000LL;  // 00:30 — XUNI window closed
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        auto id = j.append(payload("dd11", FindKind::XEN11, 100000));
+        const auto p = payload("dd11", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         j.find_(id)->status = FindStatus::AcceptedUnconfirmed;  // earlier 200, lookup failed
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::ConfirmRetried);  // no Pending work: retry only
         CHECK(j.record(id).status == FindStatus::Acked);
         CHECK(j.record(id).confirmed_at.has_value());
@@ -467,7 +501,8 @@ int main() {
         clk.wall = 1767227400000LL;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        auto id = j.append(payload("dd22", FindKind::XEN11, 100000));
+        const auto p = payload("dd22", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         j.find_(id)->status = FindStatus::AcceptedUnconfirmed;
         t.confirm_queue.push_back(ok(404, R"({"error": "Data not found for provided key"})"));
         CHECK(m.runOnce() == StepResult::ConfirmRetried);
@@ -477,7 +512,7 @@ int main() {
         // After the backoff it re-enters the normal submission drain.
         clk.advance(10000);
         t.submit_queue.push_back(ok(200, kOk200));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(id).status == FindStatus::Acked);
     }
@@ -490,7 +525,8 @@ int main() {
         clk.wall = 1767227400000LL;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        auto id = j.append(payload("dd33", FindKind::XEN11, 100000));
+        const auto p = payload("dd33", FindKind::XEN11, 100000);
+        auto id = j.append(p);
         j.find_(id)->status = FindStatus::AcceptedUnconfirmed;
         t.confirm_queue.push_back(down());
         CHECK(m.runOnce() == StepResult::ConfirmRetried);
@@ -503,7 +539,7 @@ int main() {
         CHECK_EQ(t.confirmed_keys.size(), static_cast<std::size_t>(1));
         // Past the backoff the retry lands and the record confirms.
         clk.advance(3000);
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
         CHECK(m.runOnce() == StepResult::ConfirmRetried);
         CHECK(j.record(id).status == FindStatus::Acked);
     }
@@ -516,7 +552,8 @@ int main() {
         clk.wall = 1767227400000LL;
         SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
                             [&] { return clk.wall; });
-        j.append(payload("ee11", FindKind::XEN11, 100000));
+        const auto p1 = payload("ee11", FindKind::XEN11, 100000);
+        j.append(p1);
         for (int i = 0; i < 3; ++i) {
             if (i > 0) {
                 clk.advance(60000);
@@ -526,7 +563,8 @@ int main() {
         }
         CHECK(m.breakerState() == CircuitBreaker::State::Open);
         // An unconfirmed record eligible right now...
-        auto u = j.append(payload("ee22", FindKind::XEN11, 100000));
+        const auto p2 = payload("ee22", FindKind::XEN11, 100000);
+        auto u = j.append(p2);
         j.find_(u)->status = FindStatus::AcceptedUnconfirmed;
         // ...is NOT probed while the breaker is OPEN (probe isn't due yet either).
         CHECK(m.runOnce() == StepResult::Idle);
@@ -537,8 +575,8 @@ int main() {
         CHECK(m.runOnce() == StepResult::Probed);  // HALF_OPEN now
         clk.advance(60000);
         t.submit_queue.push_back(ok(200, kOk200));   // half-open probe: the Pending record
-        t.confirm_queue.push_back(ok(200, kBlockRow));
-        t.confirm_queue.push_back(ok(200, kBlockRow));  // then the retry for ee22
+        t.confirm_queue.push_back(ok(200, blockRow(p1)));
+        t.confirm_queue.push_back(ok(200, blockRow(p2)));  // then the retry for ee22
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(u).status == FindStatus::Acked);
     }
@@ -564,10 +602,11 @@ int main() {
             std::snprintf(key, sizeof(key), "xu%02d", i);
             j.append(payload(key, FindKind::XUNI, 100000));
         }
-        j.append(payload("xen1", FindKind::XEN11, 100000));
+        const auto xen = payload("xen1", FindKind::XEN11, 100000);
+        j.append(xen);
 
         t.submit_queue.push_back(ok(200, "{\"message\": \"Block added\"}"));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(xen)));
         CHECK(m.runOnce() == StepResult::Submitted);  // was Idle before the fix
         CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
         CHECK_EQ(t.submitted_keys[0], std::string("xen1"));
@@ -592,15 +631,261 @@ int main() {
             std::snprintf(key, sizeof(key), "xe%02d", i);
             j.append(payload(key, FindKind::XEN11, 100000));
         }
-        j.append(payload("xuni1", FindKind::XUNI, 100000));
+        const auto xuni = payload("xuni1", FindKind::XUNI, 100000);
+        j.append(xuni);
 
         t.submit_queue.push_back(ok(200, "{\"message\": \"Block added\"}"));
-        t.confirm_queue.push_back(ok(200, kBlockRow));
+        t.confirm_queue.push_back(ok(200, blockRow(xuni)));
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
         // With <=60 s to the window close, the XUNI goes first even though 20 older XEN11
         // exist — they remain valid after :05; the XUNI does not.
         CHECK_EQ(t.submitted_keys[0], std::string("xuni1"));
+    }
+
+    // =============================================================================
+    // Finding 4 — a confirmation 200 is only an ack when its body proves our row.
+    // =============================================================================
+
+    TEST_CASE("confirmationMatches validates key and hash byte-for-byte");
+    {
+        using Check = SubmissionManager::ConfirmBodyCheck;
+        treeminer::FindRecord rec;
+        rec.payload = payload("aabb", FindKind::XEN11, 100000);
+        // The real row (gpage.py:331-364) confirms; hash_to_verify may legitimately be
+        // absent (older rows / XUNI table), and then the key alone decides.
+        CHECK(SubmissionManager::confirmationMatches(rec, blockRow(rec.payload)) ==
+              Check::Confirmed);
+        CHECK(SubmissionManager::confirmationMatches(rec, R"({"key": "aabb"})") ==
+              Check::Confirmed);
+        // Non-JSON, empty, HTML error pages, arrays, and key-less objects are all
+        // Malformed: a body that identifies nothing can confirm nothing.
+        CHECK(SubmissionManager::confirmationMatches(rec, "") == Check::Malformed);
+        CHECK(SubmissionManager::confirmationMatches(rec, "<html>502</html>") ==
+              Check::Malformed);
+        CHECK(SubmissionManager::confirmationMatches(rec, "OK") == Check::Malformed);
+        CHECK(SubmissionManager::confirmationMatches(rec, R"([{"key": "aabb"}])") ==
+              Check::Malformed);
+        CHECK(SubmissionManager::confirmationMatches(rec, R"({"block_id": 7})") ==
+              Check::Malformed);
+        // A different key is some other row — not a confirmation of ours. Byte equality:
+        // case differences are mismatches too.
+        CHECK(SubmissionManager::confirmationMatches(rec, R"({"key": "ffff"})") ==
+              Check::KeyMismatch);
+        CHECK(SubmissionManager::confirmationMatches(rec, R"({"key": "AABB"})") ==
+              Check::KeyMismatch);
+        // Our key with a different stored hash is the serious case.
+        CHECK(SubmissionManager::confirmationMatches(
+                  rec, R"({"key": "aabb", "hash_to_verify": "$argon2id$other"})") ==
+              Check::HashMismatch);
+    }
+
+    TEST_CASE("initial confirm: 200 with WRONG key stays AcceptedUnconfirmed, then recovers");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;  // 00:30 — XUNI window closed
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        const auto p = payload("ff11", FindKind::XEN11, 100000);
+        const auto other = payload("attacker", FindKind::XEN11, 100000);
+        auto id = j.append(p);
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(other)));  // 200, but not OUR row
+        CHECK(m.runOnce() == StepResult::Submitted);
+        // Not Acked (nothing proven), not Pending (server may hold the row): unconfirmed
+        // with the normal per-record backoff in the future.
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK_STREQ(j.record(id).next_attempt_at.value_or(""),
+                    SubmissionManager::isoUtc(clk.wall + 2000));
+        CHECK_EQ(m.metrics().acked, 0u);
+        CHECK_EQ(m.metrics().reconciled_via_get_block, 0u);
+        CHECK_EQ(m.metrics().confirm_body_rejected, 1u);
+        CHECK(j.record(id).status_reason.find("different key") != std::string::npos);
+        // The retry path re-asks after the backoff; a genuine row then acks it.
+        clk.advance(3000);
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::Acked);
+    }
+
+    TEST_CASE("initial confirm: 200 with garbage body stays AcceptedUnconfirmed");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        auto id = j.append(payload("ff22", FindKind::XEN11, 100000));
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, "<html><body>captive portal</body></html>"));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK(j.record(id).next_attempt_at.has_value());
+        CHECK_EQ(m.metrics().acked, 0u);
+        CHECK_EQ(m.metrics().confirm_body_rejected, 1u);
+    }
+
+    TEST_CASE("initial confirm: 200 JSON missing the key field stays AcceptedUnconfirmed");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        auto id = j.append(payload("ff33", FindKind::XEN11, 100000));
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, R"({"block_id": 7, "account": "0x1111"})"));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK(j.record(id).next_attempt_at.has_value());
+        CHECK_EQ(m.metrics().confirm_body_rejected, 1u);
+    }
+
+    TEST_CASE("initial confirm: matching key but mismatched hash_to_verify is never acked");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        const auto p = payload("ff44", FindKind::XEN11, 100000);
+        auto id = j.append(p);
+        auto impostor = p;  // same key, different stored hash: server row is NOT our find
+        impostor.hash_to_verify = "$argon2id$v=19$m=100000,t=1,p=1$saltsalt$SOMEONEELSE";
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(impostor)));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK(j.record(id).next_attempt_at.has_value());
+        CHECK_EQ(m.metrics().acked, 0u);
+        CHECK_EQ(m.metrics().confirm_body_rejected, 1u);
+        CHECK(j.record(id).status_reason.find("DIFFERENT hash_to_verify") !=
+              std::string::npos);
+    }
+
+    TEST_CASE("confirm retry: 200 with wrong key stays AcceptedUnconfirmed with backoff");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        const auto p = payload("gg11", FindKind::XEN11, 100000);
+        const auto other = payload("attacker", FindKind::XEN11, 100000);
+        auto id = j.append(p);
+        j.find_(id)->status = FindStatus::AcceptedUnconfirmed;
+        t.confirm_queue.push_back(ok(200, blockRow(other)));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK_STREQ(j.record(id).next_attempt_at.value_or(""),
+                    SubmissionManager::isoUtc(clk.wall + 2000));
+        CHECK_EQ(m.metrics().acked, 0u);
+        CHECK_EQ(m.metrics().confirm_body_rejected, 1u);
+        // Past the backoff, a genuine row still acks it.
+        clk.advance(3000);
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::Acked);
+    }
+
+    TEST_CASE("confirm retry: garbage and hash-mismatch 200s stay AcceptedUnconfirmed");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        const auto p = payload("gg22", FindKind::XEN11, 100000);
+        auto id = j.append(p);
+        j.find_(id)->status = FindStatus::AcceptedUnconfirmed;
+        t.confirm_queue.push_back(ok(200, "not json at all"));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK(j.record(id).next_attempt_at.has_value());
+        // And the serious flavor on the retry path too: same key, different hash.
+        auto impostor = p;
+        impostor.hash_to_verify = "$argon2id$v=19$m=100000,t=1,p=1$saltsalt$SOMEONEELSE";
+        clk.advance(3000);
+        t.confirm_queue.push_back(ok(200, blockRow(impostor)));
+        CHECK(m.runOnce() == StepResult::ConfirmRetried);
+        CHECK(j.record(id).status == FindStatus::AcceptedUnconfirmed);
+        CHECK_EQ(m.metrics().acked, 0u);
+        CHECK_EQ(m.metrics().confirm_body_rejected, 2u);
+    }
+
+    // =============================================================================
+    // Finding 8 — exceptions inside the drain step must never escape (std::terminate).
+    // =============================================================================
+
+    TEST_CASE("journal exception is contained: fatal callback fires once, loop goes inert");
+    {
+        ThrowingJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        std::vector<std::string> fatals;
+        m.setFatalCallback([&](const std::string& what) { fatals.push_back(what); });
+        const auto p = payload("hh11", FindKind::XEN11, 100000);
+        j.append(p);
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
+        bool escaped = false;
+        StepResult r = StepResult::Submitted;
+        try {
+            r = m.runOnce();  // recordAttempt throws JournalError inside
+        } catch (...) {
+            escaped = true;
+        }
+        CHECK(!escaped);
+        CHECK(r == StepResult::Idle);
+        CHECK_EQ(j.throw_count, 1);
+        CHECK_EQ(fatals.size(), static_cast<std::size_t>(1));
+        CHECK(fatals[0].find("disk I/O error") != std::string::npos);
+        CHECK_EQ(m.metrics().thread_loop_exceptions, 1u);
+        // First exception wins: the manager is inert now — no further journal/transport
+        // work, no second callback.
+        clk.advance(60000);
+        CHECK(m.runOnce() == StepResult::Idle);
+        CHECK_EQ(j.throw_count, 1);
+        CHECK_EQ(fatals.size(), static_cast<std::size_t>(1));
+        // stop() is safe even though start() was never called.
+        m.stop();
+    }
+
+    TEST_CASE("thread loop survives a journal exception and stop() joins cleanly");
+    {
+        // The one threaded test: the real threadLoop_ hits the throwing journal on its
+        // first step, halts itself, and stays joinable. The fatal callback fulfills a
+        // promise, so the wait is event-driven — no sleeps, no polling.
+        ThrowingJournal j;
+        FakeTransport t;
+        SubmissionManager m(j, t, testConfig());  // default (real) clocks: fine, the
+                                                  // fatal fires on the very first step
+        std::promise<std::string> fatal_promise;
+        auto fatal_future = fatal_promise.get_future();
+        m.setFatalCallback(
+            [&](const std::string& what) { fatal_promise.set_value(what); });
+        const auto p = payload("hh22", FindKind::XEN11, 100000);
+        j.append(p);
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
+        m.start();
+        CHECK(fatal_future.wait_for(std::chrono::seconds(10)) ==
+              std::future_status::ready);
+        // The loop halted itself (running_ cleared by handleFatal_); stop() must still
+        // join the finished-but-joinable thread instead of early-returning past it.
+        m.stop();
+        CHECK_EQ(m.metrics().thread_loop_exceptions, 1u);
+        CHECK_EQ(j.throw_count, 1);
     }
 
     return testfw::summary("submission_manager");

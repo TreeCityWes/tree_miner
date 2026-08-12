@@ -1,11 +1,11 @@
 """Account router — /api/auth/*, /api/accounts/{id}/* endpoints."""
 
-from fastapi import APIRouter, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from starlette.requests import Request
 
-from server.auth import SIGN_MESSAGE_TEMPLATE
-from server.deps import get_server
-from server.models import RegisterRequest, LoginRequest, DepositRequest, WithdrawRequest, WalletVerifyRequest
+from server.auth import JWT_TTL, SESSION_COOKIE_NAME, SIGN_MESSAGE_TEMPLATE
+from server.deps import get_server, require_auth
+from server.models import RegisterRequest, DepositRequest, WithdrawRequest, WalletVerifyRequest
 
 router = APIRouter()
 
@@ -23,7 +23,7 @@ async def auth_nonce(request: Request, address: str = Query(...)):
 
 
 @router.post("/api/auth/verify")
-async def auth_verify(request: Request, req: WalletVerifyRequest):
+async def auth_verify(request: Request, response: Response, req: WalletVerifyRequest):
     srv = get_server(request)
     if not srv.auth.verify_signature(req.address, req.signature, req.nonce):
         raise HTTPException(status_code=401, detail="Invalid signature or expired nonce")
@@ -31,8 +31,16 @@ async def auth_verify(request: Request, req: WalletVerifyRequest):
     if acct is None:
         raise HTTPException(status_code=500, detail="Failed to create account")
     token = srv.auth.issue_jwt(req.address, acct["role"], acct["account_id"])
+    response.set_cookie(
+        key=SESSION_COOKIE_NAME,
+        value=token,
+        max_age=JWT_TTL,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
     return {
-        "token": token,
         "address": req.address,
         "account_id": acct["account_id"],
         "role": acct["role"],
@@ -43,11 +51,13 @@ async def auth_verify(request: Request, req: WalletVerifyRequest):
 async def auth_register(request: Request, req: RegisterRequest):
     srv = get_server(request)
     try:
+        # Balance is intentionally NOT taken from the request: new accounts
+        # always start at the server-side default (0). Funds arrive via the
+        # deposit flow, never at registration time.
         acct = await srv.auth.register(
             account_id=req.account_id,
             role=req.role,
             eth_address=req.eth_address,
-            balance=req.balance,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -62,18 +72,15 @@ async def auth_register(request: Request, req: RegisterRequest):
     }
 
 
-@router.post("/api/auth/login")
-async def auth_login(request: Request, req: LoginRequest):
-    srv = get_server(request)
-    try:
-        acct = await srv.auth.login(req.account_id)
-    except KeyError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    return {
-        "account_id": acct["account_id"],
-        "role": acct["role"],
-        "api_key": acct["api_key"],
-    }
+@router.post("/api/auth/logout", status_code=204)
+async def auth_logout(response: Response):
+    response.delete_cookie(
+        key=SESSION_COOKIE_NAME,
+        httponly=True,
+        secure=True,
+        samesite="strict",
+        path="/",
+    )
 
 
 @router.get("/api/auth/me")
@@ -98,14 +105,10 @@ async def auth_me(
 async def get_balance(
     request: Request,
     account_id: str,
-    x_api_key: str = Header(default=""),
-    authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth()),
 ):
     srv = get_server(request)
-    caller = None
-    if srv.auth and (x_api_key or authorization):
-        caller = await srv.auth.resolve_account(x_api_key, authorization)
-    if caller and caller["role"] != "admin" and caller["account_id"] != account_id:
+    if caller["role"] != "admin" and caller["account_id"] != account_id:
         raise HTTPException(status_code=403, detail="You can only view your own balance")
     acct = await srv.accounts.get_account(account_id)
     if acct is None:
@@ -123,14 +126,10 @@ async def deposit(
     request: Request,
     account_id: str,
     req: DepositRequest,
-    x_api_key: str = Header(default=""),
-    authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth()),
 ):
     srv = get_server(request)
-    caller = None
-    if srv.auth and (x_api_key or authorization):
-        caller = await srv.auth.resolve_account(x_api_key, authorization)
-    if caller and caller["role"] != "admin" and caller["account_id"] != account_id:
+    if caller["role"] != "admin" and caller["account_id"] != account_id:
         raise HTTPException(status_code=403, detail="You can only deposit to your own account")
     try:
         acct = await srv.accounts.deposit(account_id, req.amount)
@@ -149,11 +148,9 @@ async def withdraw(
     request: Request,
     account_id: str,
     req: WithdrawRequest,
-    x_api_key: str = Header(default=""),
-    authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth()),
 ):
     srv = get_server(request)
-    caller = await srv.auth.get_current_account(x_api_key=x_api_key, authorization=authorization)
     if caller["role"] != "admin" and caller["account_id"] != account_id:
         raise HTTPException(status_code=403, detail="You can only withdraw from your own account")
     try:

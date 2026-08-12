@@ -2,36 +2,34 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from starlette.requests import Request
 
-from server.deps import get_server
+from server.deps import get_server, require_auth
 from server.models import RentRequest, StopRequest
 
 router = APIRouter()
 
 
-async def _resolve_caller(srv, x_api_key: str = "", authorization: str = "") -> Optional[dict]:
-    """Resolve account from JWT or API key."""
-    if srv.auth is None:
-        return None
-    return await srv.auth.resolve_account(x_api_key, authorization)
-
-
 @router.post("/api/rent")
 async def rent_hashpower(
     request: Request, req: RentRequest,
-    x_api_key: str = Header(default=""), authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth("consumer")),
 ):
     srv = get_server(request)
-    caller = await _resolve_caller(srv, x_api_key, authorization)
-    if caller and caller["role"] not in ("consumer", "admin"):
-        raise HTTPException(status_code=403, detail="Consumer account required to rent")
-    # Derive consumer from JWT when body fields are empty
-    consumer_id = req.consumer_id or (caller["account_id"] if caller else "")
-    consumer_address = req.consumer_address or (caller.get("eth_address", "") if caller else "")
+    # Non-admin callers always rent as themselves; only admins may act on
+    # behalf of another consumer. Body fields used to let anonymous callers
+    # rent (and spend) on any account.
+    if caller["role"] == "admin":
+        consumer_id = req.consumer_id or caller["account_id"]
+        consumer_address = req.consumer_address
+    else:
+        if req.consumer_id and req.consumer_id != caller["account_id"]:
+            raise HTTPException(status_code=403, detail="You can only rent for your own account")
+        consumer_id = caller["account_id"]
+        consumer_address = req.consumer_address or caller.get("eth_address", "")
     if not consumer_id:
-        raise HTTPException(status_code=400, detail="consumer_id required (provide in body or authenticate)")
+        raise HTTPException(status_code=400, detail="consumer_id required")
     lease = await srv.matcher.rent_hashpower(
         consumer_id=consumer_id,
         consumer_address=consumer_address,
@@ -54,16 +52,19 @@ async def rent_hashpower(
 @router.post("/api/stop")
 async def stop_lease(
     request: Request, req: StopRequest,
-    x_api_key: str = Header(default=""), authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth()),
 ):
     srv = get_server(request)
-    caller = await _resolve_caller(srv, x_api_key, authorization)
+    # Check ownership BEFORE mutating: the old code stopped the lease first,
+    # so even a rejected (403) call had already killed the lease.
+    existing = await srv.matcher.get_lease(req.lease_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Lease not found or not active")
+    if caller["role"] != "admin" and caller["account_id"] != existing["consumer_id"]:
+        raise HTTPException(status_code=403, detail="You can only stop your own leases")
     lease = await srv.matcher.stop_lease(req.lease_id)
     if lease is None:
         raise HTTPException(status_code=404, detail="Lease not found or not active")
-    if caller and caller["role"] != "admin":
-        if caller["role"] == "consumer" and caller["account_id"] != lease["consumer_id"]:
-            raise HTTPException(status_code=403, detail="You can only stop your own leases")
     record = await srv.settlement.settle_lease(lease)
     result = {
         "lease_id": lease["lease_id"],
@@ -79,17 +80,17 @@ async def stop_lease(
 @router.post("/api/rental/start")
 async def rental_start(
     request: Request, req: RentRequest,
-    x_api_key: str = Header(default=""), authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth("consumer")),
 ):
-    return await rent_hashpower(request, req, x_api_key, authorization)
+    return await rent_hashpower(request, req, caller)
 
 
 @router.post("/api/rental/stop")
 async def rental_stop(
     request: Request, req: StopRequest,
-    x_api_key: str = Header(default=""), authorization: str = Header(default=""),
+    caller: dict = Depends(require_auth()),
 ):
-    return await stop_lease(request, req, x_api_key, authorization)
+    return await stop_lease(request, req, caller)
 
 
 @router.get("/api/leases")

@@ -23,6 +23,16 @@ public:
 	void disconnect();
 	bool isConnected() const;
 
+	// --- TLS (security review finding 2) ---
+	// TLS engages automatically when the broker URI uses ssl://, mqtts:// or wss://;
+	// server certificate verification is then ALWAYS on (no insecure knob — a
+	// verification-off TLS mode is indistinguishable from plaintext to an active
+	// attacker). Call these before connect().
+	// CA bundle used to verify the broker certificate (defaults to the system store).
+	void setTlsCaFile(std::string path);
+	// Mutual-TLS client identity: PEM certificate + PEM private key.
+	void setTlsClientCert(std::string certPath, std::string keyPath);
+
 	// Publish with QoS 1
 	bool publish(const std::string& topic, const nlohmann::json& payload);
 	bool publish(const std::string& topic, const std::string& payload);
@@ -56,6 +66,9 @@ private:
 
 	void resubscribeAll();
 
+	// True when broker_uri_ requests an encrypted transport.
+	bool isSecureUri() const;
+
 	std::string broker_uri_;
 	std::string worker_id_;
 	std::string client_id_;
@@ -67,7 +80,15 @@ private:
 	std::vector<std::string> subscribed_topics_;
 	std::mutex topics_mutex_;
 
+	// TLS material (paths, not contents). Empty = library defaults.
+	std::string tls_ca_file_;
+	std::string tls_client_cert_;
+	std::string tls_client_key_;
+
 	std::atomic<bool> connected_{false};
+	// One-time plaintext warning latch — connect() may run many times (reconnect
+	// loop), but the operator only needs telling once.
+	bool plaintext_warned_{false};
 
 	static constexpr int QOS = 1;
 	static constexpr int MAX_RECONNECT_DELAY_MS = 30000;

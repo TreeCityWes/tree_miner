@@ -73,7 +73,13 @@ public:
         r.transport_ok = true;
         const bool found = stored_.count(key) != 0;
         r.http_status = found ? 200 : 404;
-        r.body = found ? "{\"key\": \"" + key + "\"}" : "{\"error\": \"not found\"}";
+        // gpage.py:331-364 returns the stored row itself. The manager validates that the
+        // 200 body's key (and hash_to_verify, when present) matches the record it asked
+        // about (security finding 4), so the model must echo the REAL stored values —
+        // a bare 200 would no longer count as confirmation.
+        r.body = found ? "{\"key\": \"" + key + "\", \"hash_to_verify\": \"" +
+                             stored_[key] + "\"}"
+                       : "{\"error\": \"not found\"}";
         return r;
     }
 

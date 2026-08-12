@@ -93,7 +93,7 @@ MiningContext LeaseManager::toMiningContext() const
 		// Return self-mining context
 		MiningContext ctx;
 		ctx.mode = MiningMode::SELF_MINING;
-		ctx.address = globalUserAddress;
+		ctx.address = miningIdentitySnapshot()->userAddress;
 		return ctx;
 	}
 

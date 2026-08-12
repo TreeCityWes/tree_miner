@@ -1,11 +1,21 @@
 # Authentication System
 
+> **Current browser-session contract:** Wallet verification sets the JWT in the
+> `xb_session` cookie with `Secure`, `HttpOnly`, and `SameSite=Strict`. The JWT is
+> not returned in JSON or stored in `localStorage`. The SPA sends same-origin
+> credentials and logs out through `POST /api/auth/logout`. The former
+> account-ID-only `POST /api/auth/login` endpoint was removed because it exposed
+> long-lived API keys without proof of identity. API keys remain available to
+> provisioned non-browser clients. Production mode (`--production`) refuses the
+> documented development admin key and requires `--admin-key` or
+> `XENMINER_ADMIN_KEY`.
+
 ## 1. Overview
 
 The XenBlocks Mining Platform implements a dual-mode authentication architecture:
 
-1. **Wallet-based (SIWE-style)** -- Ethereum wallet authentication using EIP-191 signed messages, producing a JWT for session management. This is the primary flow for the web dashboard.
-2. **Legacy API Key** -- A static `X-API-Key` header for programmatic/miner access. Retained for backward compatibility with existing integrations.
+1. **Wallet-based (SIWE-style)** -- EIP-191 authentication with an HttpOnly cookie session. This is the primary web flow.
+2. **Provisioned API Key** -- A static `X-API-Key` header for programmatic/miner access.
 
 Both flows converge at `resolve_account()`, which normalizes the caller identity into a unified account dict used by all downstream authorization checks.
 
@@ -129,7 +139,7 @@ The message is encoded with `eth_account.messages.encode_defunct(text=...)` (EIP
 
 - Issued on successful `POST /api/auth/verify`.
 - Validated on every request by `decode_jwt()` -- rejects `ExpiredSignatureError` and `InvalidTokenError` silently (returns `None`).
-- Stored client-side under `localStorage` key `"xb_jwt"`.
+- Stored in the Secure, HttpOnly, SameSite=Strict `xb_session` cookie.
 
 ### Ephemeral Secret Warning
 
@@ -153,7 +163,7 @@ X-API-Key: <32-char hex token>
 
 `secrets.token_hex(16)` produces a 32-character hexadecimal key. Keys are generated during:
 - `POST /api/auth/register` -- new account creation.
-- `POST /api/auth/login` -- if the existing account has no key, one is generated on the fly.
+- There is no unauthenticated key lookup or recovery endpoint.
 - Server startup -- backfill for default accounts (`consumer-1`, `consumer-2`) via `ensure_api_keys_for_defaults()`.
 
 ### Admin Key
@@ -228,10 +238,10 @@ The lookup uses case-insensitive comparison (`COLLATE NOCASE`) on the `eth_addre
 - `connecting: boolean` -- loading flag during the sign flow.
 
 **Mount (session restore):**
-1. Read `"xb_jwt"` from `localStorage`.
-2. If present, call `GET /api/auth/me` with the stored JWT.
+1. Call `GET /api/auth/me`; the browser supplies the session cookie.
+2. Restore the wallet address when the cookie is valid.
 3. On success, set `address` from the response's `eth_address`.
-4. On failure (expired/invalid), call `clearToken()` and reset state.
+4. On failure (expired/invalid), reset state.
 
 **Connect:**
 1. Detect `window.ethereum` (MetaMask). Alert and abort if missing.
@@ -239,17 +249,17 @@ The lookup uses case-insensitive comparison (`COLLATE NOCASE`) on the `eth_addre
 3. `GET /api/auth/nonce?address=<addr>` -- receive `{ nonce, message }`.
 4. `signer.signMessage(message)` -- triggers MetaMask popup.
 5. `POST /api/auth/verify` with `{ address, signature, nonce }`.
-6. Store returned `token` in `localStorage`, set `address` in state.
+6. The response sets the HttpOnly cookie; set `address` in state.
 7. User rejection (MetaMask code `4001`) is silently ignored.
 
 **Disconnect:**
-1. Remove `"xb_jwt"` from `localStorage`.
+1. Call `POST /api/auth/logout` to expire the cookie.
 2. Clear `address` state.
 
 **MetaMask Event Listeners:**
 - `accountsChanged` -- fires when user switches accounts in MetaMask.
 - `chainChanged` -- fires when user switches networks.
-- Both trigger `clearToken()` + `setAddress(null)`, forcing re-authentication.
+- Both expire the session and clear the address, forcing re-authentication.
 
 ### API Client (`api.ts`)
 
@@ -299,7 +309,7 @@ The default admin key (`admin-test-key-do-not-use-in-production`) is a hardcoded
 
 ### Token Storage
 
-JWTs are stored in `localStorage` under key `"xb_jwt"`. This is accessible to any JavaScript running on the same origin, making it vulnerable to XSS. Mitigations:
+JWTs are inaccessible to JavaScript because the session cookie is HttpOnly. XSS can still perform actions as the user, so retain these mitigations:
 
 - Content Security Policy (CSP) headers to limit script sources.
 - Input sanitization to prevent stored/reflected XSS.

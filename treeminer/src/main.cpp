@@ -55,7 +55,6 @@ bool globalPlatformMode = false;
 std::string globalMqttBroker = "";
 std::string globalWorkerId = "";
 std::unique_ptr<PlatformManager> globalPlatformManager;
-std::string globalTestBlockPattern = "";
 
 // Difficulty-headroom policy, resolved from config.txt + command line before mining starts
 // and handed to the SubmissionManager, which owns the ramp (PLAN §5, §10.7).
@@ -175,6 +174,7 @@ int main(int argc, const char *const *argv)
     // idle and auto-resume when difficulty falls back (see CpuMiningWorker::Config).
     std::uint32_t cpuMaxDifficulty = 100;
     std::string displayMode = "logs";
+    std::string dashboardBind = "127.0.0.1";
 
     for (int i = 1; i < argc; ++i) {
         if (std::string(argv[i]) == "--execute") {
@@ -218,6 +218,7 @@ int main(int argc, const char *const *argv)
             ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
             ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
             ("cpuMaxDifficulty", po::value<int>(), "CPU workers hash only while difficulty <= this ceiling; they idle above it and resume when it falls (default 100; 0 = no ceiling)")
+            ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 127.0.0.1; use 0.0.0.0 explicitly for LAN access)")
             ("display", po::value<std::string>(), "terminal display: logs, terminal, or prompt");
         po::variables_map vm;
         po::store(po::parse_command_line(argc, argv, desc), vm);
@@ -226,6 +227,10 @@ int main(int argc, const char *const *argv)
         if (vm.count("help")) {
             std::cout << desc << "\n";
             return 0;
+        }
+
+        if (vm.count("dashboard-bind")) {
+            dashboardBind = vm["dashboard-bind"].as<std::string>();
         }
 
         if (vm.count("display")) {
@@ -251,8 +256,9 @@ int main(int argc, const char *const *argv)
         }
 
         if(vm.count("testBlockPattern")){
-            globalTestBlockPattern = vm["testBlockPattern"].as<std::string>();
-            std::cout << "Test block pattern override: " << globalTestBlockPattern << std::endl;
+            const auto pattern = vm["testBlockPattern"].as<std::string>();
+            setTestBlockPattern(pattern);
+            std::cout << "Test block pattern override: " << pattern << std::endl;
         }
 
         if(vm.count("batchSize")){
@@ -336,6 +342,21 @@ int main(int argc, const char *const *argv)
                     globalJournalPath = pathText;
                 }
             }
+
+            // Keep the operator console private unless LAN exposure is explicitly
+            // requested. The command line takes precedence over config.txt.
+            if (!vm.count("dashboard-bind")) {
+                const std::string configuredBind = configuredValue("dashboard_bind");
+                if (!configuredBind.empty()) {
+                    dashboardBind = configuredBind;
+                }
+            }
+        }
+
+        if (!isValidDashboardBind(dashboardBind)) {
+            std::cerr << "Invalid dashboard bind address '" << dashboardBind
+                      << "': expected an IPv4 or IPv6 address.\n";
+            return -1;
         }
 
         if (vm.count("cudaStreams")) {
@@ -380,11 +401,11 @@ int main(int argc, const char *const *argv)
             } else {
                 appConfig.tryLoad();
             }
-            globalUserAddress = appConfig.getAccountAddress();
+            setMiningUserAddress(appConfig.getAccountAddress());
             globalEcoDevfeeAddress = appConfig.getEcoDevAddr();
             globalDevfeePermillage = appConfig.getDevfeePermillage();
         } else {
-            globalUserAddress = "0x0000000000000000000000000000000000000000";
+            setMiningUserAddress("0x0000000000000000000000000000000000000000");
             globalEcoDevfeeAddress = "0x0000000000000000000000000000000000000000";
             globalDevfeePermillage = 0;
         }
@@ -415,7 +436,7 @@ int main(int argc, const char *const *argv)
                 std::cerr << "The argument (" << userAddr << ") for miner address (EIP55) is invalid." << std::endl;
                 return -1;
             }
-            globalUserAddress = userAddr;
+            setMiningUserAddress(userAddr);
             std::cout << "Miner address: " << userAddr << "\n";
         }
 
@@ -425,8 +446,9 @@ int main(int argc, const char *const *argv)
             std::cerr << "The argument (" << globalEcoDevfeeAddress << ") for ecosystem developer fee address (EIP55) is invalid." << std::endl;
             return -1;
         }
-        if (!validator.isValid(globalUserAddress)){
-            std::cerr << "The argument (" << globalUserAddress << ") for miner address (EIP55) is invalid." << std::endl;
+        const auto configuredIdentity = miningIdentitySnapshot();
+        if (!validator.isValid(configuredIdentity->userAddress)){
+            std::cerr << "The argument (" << configuredIdentity->userAddress << ") for miner address (EIP55) is invalid." << std::endl;
             return -1;
         }
         if (globalDevfeePermillage < 0 || globalDevfeePermillage > 1000) {
@@ -437,7 +459,7 @@ int main(int argc, const char *const *argv)
         signal(SIGINT, interruptSignalHandler);
 
         if (vm.count("saveConfig")) {
-            appConfig.setAccountAddress(globalUserAddress);
+            appConfig.setAccountAddress(configuredIdentity->userAddress);
             if(!globalEcoDevfeeAddress.empty()){
                 appConfig.setEcoDevAddr(globalEcoDevfeeAddress);
             }
@@ -479,7 +501,7 @@ int main(int argc, const char *const *argv)
 
         std::cout << "RPC Link: " << globalRpcLink << std::endl;
 
-        std::cout << GREEN << "Logged in as " << globalUserAddress
+        std::cout << GREEN << "Logged in as " << miningIdentitySnapshot()->userAddress
         << ". Devfee set at " << globalDevfeePermillage << "/1000."
         << ((globalDevfeePermillage != 0 && !globalEcoDevfeeAddress.empty()) ? " Ecosystem devfee address: " + globalEcoDevfeeAddress : "")
         << RESET << std::endl;
@@ -577,6 +599,13 @@ int main(int argc, const char *const *argv)
         submitConfig.margin = globalMarginConfig;
         submissionManager = std::make_unique<treeminer::SubmissionManager>(
             *findJournal, *findTransport, submitConfig);
+        // The drain thread's own unrecoverable-journal detection converges on the SAME fatal
+        // state as the submit callback's double-failure path. The callback fires once, ON the
+        // submission thread; declareFatalDurabilityFailure only sets atomics (flag + reason +
+        // running=false), never joins, so it is safe here (per the setFatalCallback contract).
+        submissionManager->setFatalCallback([](const std::string& reason) {
+            declareFatalDurabilityFailure("submission drain thread halted: " + reason);
+        });
         // The ramp publishes here; the mine loop picks it up on its next batch boundary.
         submissionManager->setMarginCallback([](std::uint32_t kib) {
             const int previous = globalDifficultyMargin.exchange(static_cast<int>(kib));
@@ -734,9 +763,9 @@ int main(int argc, const char *const *argv)
         // silently dropped the find if difficulty had ticked in between.
         const std::string hashed_data = treeminer::assemblePhc(memory_cost, hexsalt, hashed_pure);
 
-        if (globalPlatformManager && globalPlatformManager->isRunning()) {
-            globalPlatformManager->onBlockFound(hashed_data, key, "0x" + hexsalt, attempts, hashrate);
-        }
+        // (Platform reporting deliberately does NOT happen here — see the durablyCaptured
+        // block below. Review finding 5: journal-first means nothing that can block,
+        // throw, race shutdown, or put the key on the wire runs before local persistence.)
 
         treeminer::FoundPayload payload;
         payload.key = key;
@@ -755,6 +784,7 @@ int main(int argc, const char *const *argv)
         // Journal-first: durable before any network attempt. A journal failure is the one
         // event this miner must never be quiet about.
         bool journaled = false;
+        bool sunk = false;
         std::int64_t journalId = -1;
         try {
             journalId = findJournal->append(payload);
@@ -764,7 +794,7 @@ int main(int argc, const char *const *argv)
             // deliberately disjoint from SQLite's (no locks, no WAL, plain O_APPEND), so
             // most journal failures still end in durable capture. The next boot imports
             // the sink back into the journal (idempotent by key).
-            const bool sunk = fallbackSink.append(payload);
+            sunk = fallbackSink.append(payload);
             if (sunk) {
                 ConsoleLog::event(ConsoleLog::Level::Warn, "JOURNAL",
                                   "write failed; find captured in fallback sink | " +
@@ -773,14 +803,36 @@ int main(int argc, const char *const *argv)
                            std::string(e.what()));
             } else {
                 // Both durability paths failed — this find really is at risk, and the
-                // disk itself is the prime suspect. Loudest severity we have.
+                // disk itself is the prime suspect. A miner that cannot persist finds is
+                // destroying every future find it makes, so this is FATAL (review
+                // finding 6): declare the state, which stops the mining loops via
+                // `running`; main() then exits NONZERO so a supervisor (systemd
+                // Restart=always) restarts us against a hopefully-recovered disk.
                 ConsoleLog::event(ConsoleLog::Level::Error, "JOURNAL",
-                                  "write failed AND fallback sink failed — find at risk | " +
+                                  "write failed AND fallback sink failed — find at risk; "
+                                  "HALTING miner (exit nonzero for supervisor restart) | " +
                                   std::string(e.what()));
-                logger.log("JOURNAL WRITE FAILED, fallback sink FAILED error=" +
-                           std::string(e.what()));
+                logger.log("JOURNAL WRITE FAILED, fallback sink FAILED — FATAL, "
+                           "stopping miner error=" + std::string(e.what()));
+                declareFatalDurabilityFailure(
+                    "journal append and fallback sink both failed: " +
+                    std::string(e.what()));
             }
         }
+        // The one fact the rest of this callback keys off: does this find exist anywhere
+        // durable? Journal and sink are equally acceptable — the sink imports back into
+        // the journal on the next boot.
+        const bool durablyCaptured = journaled || sunk;
+
+        // Review finding 5: platform reporting strictly AFTER durable capture. MQTT can
+        // block, throw, or race shutdown, and it puts the key on the wire — none of which
+        // may precede local persistence. And a find that reached NEITHER durability path
+        // is not reported at all: advertising a block the disk never received would have
+        // the platform (and its consumer) accounting for value that no longer exists.
+        if (durablyCaptured && globalPlatformManager && globalPlatformManager->isRunning()) {
+            globalPlatformManager->onBlockFound(hashed_data, key, "0x" + hexsalt, attempts, hashrate);
+        }
+
         if (journaled) {
             try {
                 const auto counts = findJournal->counts();
@@ -819,21 +871,36 @@ int main(int argc, const char *const *argv)
         std::string findClass;
         if (payload.kind == treeminer::FindKind::XEN11) {
             size_t capitalCount = std::count_if(hashed_pure.begin(), hashed_pure.end(), [](unsigned char c) { return std::isupper(c); });
-            if (capitalCount >= 50) {
-                findClass = "superblock";
-                globalSuperBlockCount++;
-            } else {
-                findClass = "normal";
-                globalNormalBlockCount++;
-            }
+            findClass = capitalCount >= 50 ? "superblock" : "normal";
         } else {
             findClass = "xuni";
-            globalXuniBlockCount++;
         }
-        findMessage << " | class=" << findClass
-                    << (journaled ? " | Secured locally; uplink queued."
-                                  : " | LOCAL SAVE FAILED; not queued.");
-        ConsoleLog::event(journaled ? ConsoleLog::Level::Found : ConsoleLog::Level::Error,
+        // Review finding 6: the lifetime counters mean "finds this run that still
+        // exist". A find that reached neither the journal nor the sink is gone; counting
+        // it would let the status line and dashboards claim value the disk never
+        // received.
+        if (durablyCaptured) {
+            if (findClass == "superblock") {
+                globalSuperBlockCount++;
+            } else if (findClass == "normal") {
+                globalNormalBlockCount++;
+            } else {
+                globalXuniBlockCount++;
+            }
+        }
+        findMessage << " | class=" << findClass;
+        if (journaled) {
+            findMessage << " | Secured locally; uplink queued.";
+        } else if (sunk) {
+            findMessage << " | Journal down; captured in fallback sink (imports next start).";
+        } else {
+            // Must not read as "handled": nothing durable holds this find, and the
+            // fatal state declared above is about to take the whole miner down.
+            findMessage << " | LOCAL SAVE FAILED; not queued. HALTING miner — find is at risk.";
+        }
+        ConsoleLog::event(journaled ? ConsoleLog::Level::Found
+                                    : (sunk ? ConsoleLog::Level::Warn
+                                            : ConsoleLog::Level::Error),
                           treeminer::to_string(payload.kind), findMessage.str());
 
         if (submissionManager) {
@@ -976,14 +1043,15 @@ int main(int argc, const char *const *argv)
             [cpuWorkSequence] {
                 treeminer::CpuMiningWorker::Work work;
                 const MiningContext ctx = MiningCoordinator::getInstance().getContext();
+                const auto identity = miningIdentitySnapshot();
                 if (ctx.mode == MiningMode::PLATFORM_MINING) {
                     work.salt_hex = ctx.address.substr(0, 2) == "0x"
                         ? ctx.address.substr(2)
                         : ctx.address;
                     work.key_prefix = ctx.prefix;
                 } else {
-                    work.salt_hex = globalUserAddress.substr(2);
-                    work.key_prefix = globalSelfMiningPrefix;
+                    work.salt_hex = identity->userAddress.substr(2);
+                    work.key_prefix = identity->selfMiningPrefix;
                     if (work.key_prefix.empty() && globalDevfeePermillage > 0) {
                         const std::uint64_t slot = cpuWorkSequence->fetch_add(1) % 1000;
                         const std::uint64_t feeStart = 1000 - static_cast<std::uint64_t>(globalDevfeePermillage.load());
@@ -992,11 +1060,11 @@ int main(int argc, const char *const *argv)
                                 slot >= 1000 - static_cast<std::uint64_t>(globalDevfeePermillage.load() / 2);
                             work.salt_hex = (useEcoFee ? globalEcoDevfeeAddress : globalDevfeeAddress).substr(2);
                             work.key_prefix = (useEcoFee ? ECODEVFEE_PREFIX : DEVFEE_PREFIX) +
-                                globalUserAddress.substr(2);
+                                identity->userAddress.substr(2);
                         }
                     }
                 }
-                work.target_pattern = globalTestBlockPattern.empty() ? "XEN11" : globalTestBlockPattern;
+                work.target_pattern = identity->testBlockPattern.empty() ? "XEN11" : identity->testBlockPattern;
                 work.allow_xuni = isWithinXuniWindow();
                 return work;
             },
@@ -1053,7 +1121,7 @@ int main(int argc, const char *const *argv)
         }
 
         globalPlatformManager = std::make_unique<PlatformManager>(
-            globalMqttBroker, globalUserAddress, gpuList);
+            globalMqttBroker, miningIdentitySnapshot()->userAddress, gpuList);
 
         if (!globalPlatformManager->start()) {
             std::cerr << RED << "Failed to start PlatformManager. Continuing in self-mining mode." << RESET << std::endl;
@@ -1064,8 +1132,9 @@ int main(int argc, const char *const *argv)
     }
 
     setupRoutes(findJournal.get(), submissionManager.get());
-    std::thread serverThread(startServer);
-    Logger::logToConsole("LAN console: " + getConsoleUrl() + "\n");
+    std::thread serverThread(startServer, dashboardBind);
+    Logger::logToConsole("Local console: " + getConsoleUrl(dashboardBind) +
+                         " (bind " + dashboardBind + ")\n");
     serverThread.detach();
     if(!donotupload){
         std::thread uploadStatThread(UploadDataPeriodically, 60);
@@ -1096,6 +1165,20 @@ int main(int argc, const char *const *argv)
     if (globalPlatformManager) {
         globalPlatformManager->stop();
         globalPlatformManager.reset();
+    }
+
+    if (globalFatalDurabilityFailure.load()) {
+        // The submit callback proved a find could be persisted by NEITHER the journal
+        // NOR the fallback sink (review finding 6). Exit NONZERO so a supervisor
+        // (systemd Restart=always) brings the miner back up against a possibly-recovered
+        // disk instead of leaving a "running" process that destroys every find it makes.
+        // On the Ctrl-C path the signal handler already stops the web server; no signal
+        // fired here, so stop it before returning or the detached crow thread would race
+        // static destruction.
+        getApp().stop();
+        std::cerr << RED << "FATAL: durability failure — " << fatalDurabilityFailureReason()
+                  << " — exiting nonzero for supervisor restart" << RESET << std::endl;
+        return 2;
     }
 
     std::cout << std::endl;

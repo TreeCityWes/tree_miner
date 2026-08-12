@@ -2,8 +2,8 @@
 auth.py - Wallet-based (EIP-191) + API key authentication.
 
 Supports two auth flows:
-  1. Wallet: GET /api/auth/nonce → sign → POST /api/auth/verify → JWT
-  2. Legacy: X-API-Key header (backward compatible)
+  1. Wallet: GET /api/auth/nonce → sign → POST /api/auth/verify → session cookie
+  2. Provisioned clients: X-API-Key header
 
 resolve_account() checks Authorization: Bearer <jwt> first, then X-API-Key.
 """
@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger("auth")
 
 DEFAULT_ADMIN_KEY = "admin-test-key-do-not-use-in-production"
+SESSION_COOKIE_NAME = "xb_session"
 NONCE_TTL = 300  # 5 minutes
 JWT_TTL = 86400  # 24 hours
 SIGN_MESSAGE_TEMPLATE = (
@@ -51,7 +52,12 @@ class AuthService:
         account_repo: "AccountRepo",
         admin_key: str = DEFAULT_ADMIN_KEY,
         jwt_secret: str = "",
+        production: bool = False,
     ):
+        if production and (not admin_key or admin_key == DEFAULT_ADMIN_KEY):
+            raise ValueError(
+                "Production mode requires a non-default admin key"
+            )
         self._repo = account_repo
         self._admin_key = admin_key
         self._jwt_secret = jwt_secret or secrets.token_hex(32)
@@ -134,7 +140,7 @@ class AuthService:
             return None
 
     # -------------------------------------------------------------------
-    # Account registration / login (legacy API key flow)
+    # Account registration (API keys are provisioned once at registration)
     # -------------------------------------------------------------------
 
     async def register(
@@ -152,17 +158,6 @@ class AuthService:
         await self._repo.set_api_key(account_id, api_key)
         acct["api_key"] = api_key
         logger.info("Registered account %s role=%s", account_id, role)
-        return acct
-
-    async def login(self, account_id: str) -> dict:
-        acct = await self._repo.get(account_id)
-        if acct is None:
-            raise KeyError(f"Account '{account_id}' not found")
-        api_key = acct.get("api_key") or ""
-        if not api_key:
-            api_key = self.generate_api_key()
-            await self._repo.set_api_key(account_id, api_key)
-        acct["api_key"] = api_key
         return acct
 
     # -------------------------------------------------------------------

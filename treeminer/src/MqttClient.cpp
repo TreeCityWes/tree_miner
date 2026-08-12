@@ -1,9 +1,19 @@
 #include "MqttClient.h"
 #include "MiningCommon.h"
+#include "ConsoleLog.h"
 
 #include <iostream>
 #include <chrono>
 #include <thread>
+
+namespace {
+
+bool startsWith(const std::string& s, const char* prefix)
+{
+	return s.rfind(prefix, 0) == 0;
+}
+
+}  // namespace
 
 MqttClient::MqttClient(const std::string& broker_uri, const std::string& worker_id)
 	: broker_uri_(broker_uri), worker_id_(worker_id)
@@ -16,6 +26,26 @@ MqttClient::MqttClient(const std::string& broker_uri, const std::string& worker_
 MqttClient::~MqttClient()
 {
 	disconnect();
+}
+
+void MqttClient::setTlsCaFile(std::string path)
+{
+	tls_ca_file_ = std::move(path);
+}
+
+void MqttClient::setTlsClientCert(std::string certPath, std::string keyPath)
+{
+	tls_client_cert_ = std::move(certPath);
+	tls_client_key_ = std::move(keyPath);
+}
+
+bool MqttClient::isSecureUri() const
+{
+	// Paho C accepts ssl:// and wss:// for TLS transports; mqtts:// is the common
+	// alias, normalized by newer Paho versions. Treat all three as "encrypted".
+	return startsWith(broker_uri_, "ssl://") ||
+		   startsWith(broker_uri_, "mqtts://") ||
+		   startsWith(broker_uri_, "wss://");
 }
 
 bool MqttClient::connect()
@@ -31,6 +61,31 @@ bool MqttClient::connect()
 			.keep_alive_interval(std::chrono::seconds(KEEPALIVE_INTERVAL_SEC))
 			.connect_timeout(std::chrono::seconds(CONNECT_TIMEOUT_SEC))
 			.finalize();
+
+		if (isSecureUri()) {
+			// Security review finding 2: broker traffic carries payout-affecting
+			// commands, so an ssl:// URI always verifies the server certificate —
+			// TLS without verification would only defeat passive sniffing while an
+			// active MITM (the realistic broker threat) walks straight through.
+			auto ssl_builder = mqtt::ssl_options_builder();
+			ssl_builder.enable_server_cert_auth(true);
+			ssl_builder.verify(true);  // also check hostname matches the cert
+			ssl_builder.ssl_version(MQTT_SSL_VERSION_TLS_1_2);
+			if (!tls_ca_file_.empty()) {
+				ssl_builder.trust_store(tls_ca_file_);
+			}
+			if (!tls_client_cert_.empty()) {
+				ssl_builder.key_store(tls_client_cert_);
+				ssl_builder.private_key(tls_client_key_);
+			}
+			conn_opts.set_ssl(ssl_builder.finalize());
+		} else if (!plaintext_warned_) {
+			plaintext_warned_ = true;
+			ConsoleLog::event(ConsoleLog::Level::Warn, "mqtt",
+				"PLAINTEXT broker connection (" + broker_uri_ + ") — anyone on the "
+				"path can read and inject platform traffic. Use an ssl:// URI (and "
+				"platform_command_secret) for production.");
+		}
 
 		// Set Last Will and Testament (LWT) so broker knows if we disconnect ungracefully
 		nlohmann::json lwt_payload = {

@@ -35,7 +35,10 @@ except ImportError:
     sys.exit(1)
 
 from server.account import AccountService
-from server.auth import AuthService, ensure_api_keys_for_defaults
+from server.auth import (
+    AuthService, DEFAULT_ADMIN_KEY, SESSION_COOKIE_NAME,
+    ensure_api_keys_for_defaults,
+)
 from server.broker import MQTTBroker
 from server.chain_simulator import ChainSimulator
 from server.dashboard import register_dashboard
@@ -82,12 +85,20 @@ class PlatformServer:
     """Single-process mock platform server combining MQTT broker, REST API, and services."""
 
     def __init__(self, mqtt_port: int = 1883, api_port: int = 8080, db_path: str = "data/marketplace.db",
-                 enable_chain: bool = True, block_marker: str = "", jwt_secret: str = ""):
+                 enable_chain: bool = True, block_marker: str = "", jwt_secret: str = "",
+                 admin_key: str = DEFAULT_ADMIN_KEY, production: bool = False,
+                 api_host: str = "127.0.0.1"):
         self.mqtt_port = mqtt_port
         self.api_port = api_port
+        # Loopback by default: this is a mock platform with test credentials,
+        # so external exposure must be an explicit operator decision
+        # (--host 0.0.0.0 or XENMINER_API_HOST).
+        self.api_host = api_host
         self.db_path = db_path
         self._block_marker = block_marker
         self._jwt_secret = jwt_secret
+        self._admin_key = admin_key
+        self._production = production
 
         # Broker (created immediately, no async needed)
         self.broker = MQTTBroker(port=mqtt_port)
@@ -109,6 +120,7 @@ class PlatformServer:
 
         # FastAPI app
         self.app = FastAPI(title="XenMiner Mock Platform", version="0.3.0")
+        self._install_session_cookie_auth()
         self._register_routes()
         register_dashboard(self.app)
 
@@ -145,7 +157,12 @@ class PlatformServer:
         self.reputation = ReputationEngine(
             self.storage.workers, self.storage.leases, self.storage.blocks,
         )
-        self.auth = AuthService(self.storage.accounts, jwt_secret=self._jwt_secret)
+        self.auth = AuthService(
+            self.storage.accounts,
+            admin_key=self._admin_key,
+            jwt_secret=self._jwt_secret,
+            production=self._production,
+        )
         await ensure_api_keys_for_defaults(self.auth)
 
         self.ws_manager = WSManager(self.storage.workers, self.storage.blocks)
@@ -225,6 +242,21 @@ class PlatformServer:
     # Route registration (delegated to modular routers)
     # -------------------------------------------------------------------
 
+    def _install_session_cookie_auth(self):
+        """Expose the HttpOnly browser session to existing bearer-aware handlers."""
+        @self.app.middleware("http")
+        async def session_cookie_auth(request, call_next):
+            token = request.cookies.get(SESSION_COOKIE_NAME, "")
+            has_authorization = any(
+                name.lower() == b"authorization"
+                for name, _ in request.scope.get("headers", [])
+            )
+            if token and not has_authorization:
+                request.scope["headers"].append(
+                    (b"authorization", f"Bearer {token}".encode("latin-1"))
+                )
+            return await call_next(request)
+
     def _register_routes(self):
         self.app.state.server = self
         register_all_routers(self.app)
@@ -246,12 +278,22 @@ class PlatformServer:
 
         config = uvicorn.Config(
             self.app,
-            host="0.0.0.0",
+            host=self.api_host,
             port=self.api_port,
             log_level="info",
         )
         self._uvicorn_server = uvicorn.Server(config)
-        logger.info("REST API starting on port %d", self.api_port)
+        logger.info("REST API starting on %s:%d", self.api_host, self.api_port)
+        if self.api_host in ("127.0.0.1", "localhost", "::1"):
+            logger.info(
+                "REST API bound to loopback only; pass --host 0.0.0.0 "
+                "(or set XENMINER_API_HOST) to allow external access"
+            )
+        else:
+            logger.warning(
+                "REST API is externally reachable on %s:%d — ensure a "
+                "non-default admin key is configured", self.api_host, self.api_port,
+            )
         await self._uvicorn_server.serve()
 
     async def stop(self):
@@ -279,22 +321,33 @@ def main():
     parser = argparse.ArgumentParser(description="XenMiner Mock Platform Server")
     parser.add_argument("--mqtt-port", type=int, default=1883, help="MQTT broker port (default: 1883)")
     parser.add_argument("--api-port", type=int, default=8080, help="REST API port (default: 8080)")
+    parser.add_argument("--host", default=os.environ.get("XENMINER_API_HOST", "127.0.0.1"),
+                        help="REST API bind address (default: 127.0.0.1, loopback only; "
+                             "use 0.0.0.0 or XENMINER_API_HOST to expose externally)")
     parser.add_argument("--db-path", default="data/marketplace.db", help="SQLite database path (default: data/marketplace.db)")
     parser.add_argument("--no-chain", action="store_true", help="Disable embedded chain simulator")
     parser.add_argument("--block-marker", default="", help="Override block detection marker for testing (default: XEN11)")
     parser.add_argument("--jwt-secret", default="", help="Secret key for JWT signing (auto-generated if not set)")
+    parser.add_argument("--admin-key", default=os.environ.get("XENMINER_ADMIN_KEY", DEFAULT_ADMIN_KEY),
+                        help="Admin API key (or set XENMINER_ADMIN_KEY)")
+    parser.add_argument("--production", action="store_true",
+                        help="Enable production safety checks; requires a non-default admin key")
     args = parser.parse_args()
 
     server = PlatformServer(
         mqtt_port=args.mqtt_port, api_port=args.api_port,
         db_path=args.db_path, enable_chain=not args.no_chain,
         block_marker=args.block_marker, jwt_secret=args.jwt_secret,
+        admin_key=args.admin_key, production=args.production,
+        api_host=args.host,
     )
 
     logger.info("=" * 60)
     logger.info("  XenMiner Mock Platform Server")
     logger.info("  MQTT broker: localhost:%d", args.mqtt_port)
-    logger.info("  REST API:    http://localhost:%d", args.api_port)
+    logger.info("  REST API:    http://%s:%d (%s)", args.host, args.api_port,
+                "loopback only" if args.host in ("127.0.0.1", "localhost", "::1")
+                else "EXTERNALLY REACHABLE")
     logger.info("  Dashboard:   http://localhost:%d/dashboard", args.api_port)
     logger.info("  Database:    %s", args.db_path)
     logger.info("  Chain sim:   %s", "enabled" if not args.no_chain else "disabled")

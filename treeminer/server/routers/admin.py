@@ -1,21 +1,16 @@
 """Admin router — /api/accounts, /api/settlements, /api/status, /api/workers/{id}/control, etc."""
 
-from typing import Optional
-
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends
 from starlette.requests import Request
 
-from server.deps import get_server
+from server.deps import get_server, require_auth
 from server.models import ControlRequest
 
 router = APIRouter()
 
 
-async def _optional_account(srv, x_api_key: str) -> Optional[dict]:
-    if srv.auth is None or not x_api_key:
-        return None
-    return await srv.auth.resolve_account(x_api_key)
-
+# The root banner and /api/status expose only aggregate counters and are
+# deliberately public (the dashboard polls them anonymously).
 
 @router.get("/")
 async def root(request: Request):
@@ -43,11 +38,11 @@ async def server_status(request: Request):
 
 
 @router.get("/api/accounts")
-async def list_accounts(request: Request, x_api_key: str = Header(default="")):
+async def list_accounts(
+    request: Request,
+    caller: dict = Depends(require_auth("admin")),
+):
     srv = get_server(request)
-    caller = await _optional_account(srv, x_api_key)
-    if caller and caller["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
     accounts = await srv.accounts.list_accounts()
     sanitized = {}
     for k, v in accounts.items():
@@ -61,18 +56,29 @@ async def list_accounts(request: Request, x_api_key: str = Header(default="")):
 
 
 @router.get("/api/settlements")
-async def list_settlements(request: Request, x_api_key: str = Header(default=""), limit: int = 50, offset: int = 0):
+async def list_settlements(
+    request: Request,
+    limit: int = 50,
+    offset: int = 0,
+    caller: dict = Depends(require_auth("admin")),
+):
     srv = get_server(request)
-    caller = await _optional_account(srv, x_api_key)
-    if caller and caller["role"] != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required")
     items = await srv.settlement.list_settlements(limit=limit, offset=offset)
     total = await srv.storage.settlements.count()
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
+# Worker control publishes MQTT commands (config changes, shutdown) to live
+# miners — operator-only. Wallet owners have their own scoped command route
+# at /api/wallet/workers/{id}/command.
+
 @router.post("/api/workers/{worker_id}/control")
-async def send_control(request: Request, worker_id: str, req: ControlRequest):
+async def send_control(
+    request: Request,
+    worker_id: str,
+    req: ControlRequest,
+    caller: dict = Depends(require_auth("admin")),
+):
     srv = get_server(request)
     payload = {"action": req.action, "config": req.config}
     await srv.broker.publish(f"xenminer/{worker_id}/control", payload)
@@ -80,7 +86,11 @@ async def send_control(request: Request, worker_id: str, req: ControlRequest):
 
 
 @router.post("/api/control/broadcast")
-async def broadcast_control(request: Request, req: ControlRequest):
+async def broadcast_control(
+    request: Request,
+    req: ControlRequest,
+    caller: dict = Depends(require_auth("admin")),
+):
     srv = get_server(request)
     workers = await srv.matcher.get_available_workers()
     sent_to = []

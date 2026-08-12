@@ -7,7 +7,8 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_local_dashboard_is_read_only_and_has_an_explicit_bind():
     server = (ROOT / "src" / "LocalServer.cpp").read_text()
 
-    assert '.bindaddr("0.0.0.0")' in server or '.bindaddr("127.0.0.1")' in server
+    assert "s_app.bindaddr(bind_address)" in server
+    assert 'std::string dashboardBind = "127.0.0.1"' in (ROOT / "src" / "main.cpp").read_text()
     assert 'CROW_ROUTE(s_app, "/")' in server
     assert 'CROW_ROUTE(s_app, "/api/rig")' in server
     assert 'CROW_ROUTE(s_app, "/assets/hashfield.webp")' in server
@@ -15,8 +16,21 @@ def test_local_dashboard_is_read_only_and_has_an_explicit_bind():
     assert "getConsoleUrl" in server
 
     main = (ROOT / "src" / "main.cpp").read_text()
-    assert '"LAN console: " + getConsoleUrl()' in main
-    assert "LAN console: http://0.0.0.0" not in main
+    assert '("dashboard-bind", po::value<std::string>()' in main
+    assert 'configuredValue("dashboard_bind")' in main
+    assert "isValidDashboardBind(dashboardBind)" in main
+    assert '"Local console: " + getConsoleUrl(dashboardBind)' in main
+    assert 'std::thread serverThread(startServer, dashboardBind)' in main
+
+
+def test_dashboard_bind_validation_uses_ip_literals_and_formats_ipv6_urls():
+    server = (ROOT / "src" / "LocalServer.cpp").read_text()
+
+    assert "inet_pton(AF_INET, address.c_str(), &ipv4)" in server
+    assert "inet_pton(AF_INET6, address.c_str(), &ipv6)" in server
+    assert 'bind_address == "0.0.0.0"' in server
+    assert 'bind_address == "::"' in server
+    assert 'ipv6 ? "[" + address + "]" : address' in server
 
 
 def test_dashboard_exposes_operator_language_and_live_fields():

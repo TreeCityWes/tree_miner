@@ -9,7 +9,8 @@ class SubmissionManager;
 }
 
 crow::SimpleApp& getApp();
-std::string getConsoleUrl();
-void startServer();
+bool isValidDashboardBind(const std::string& address);
+std::string getConsoleUrl(const std::string& bind_address);
+void startServer(const std::string& bind_address);
 void setupRoutes(treeminer::IFindJournal* journal,
                  treeminer::SubmissionManager* submission_manager);

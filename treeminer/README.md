@@ -206,6 +206,20 @@ npm run build    # Outputs to web/dist/
 
 For C++ miner build instructions, see [doc/BUILD_INSTRUCTIONS.md](./doc/BUILD_INSTRUCTIONS.md).
 
+### Local miner console
+
+The miner's read-only local console listens on `127.0.0.1:42069` by default. To expose it
+to a trusted LAN, opt in with an IP literal:
+
+```bash
+xenblocksMiner --dashboard-bind 0.0.0.0
+```
+
+The equivalent `config.txt` setting is `dashboard_bind=0.0.0.0`; a command-line value
+overrides it. Binding to a wildcard exposes wallet, lease, hardware, performance, and
+operational details without authentication, so protect port 42069 with host/network
+firewall rules. Startup prints both the browser URL and the actual listen address.
+
 ## Precompiled Binaries
 
 Precompiled miner binaries for supported platforms are available in the [Releases](https://github.com/woodysoil/XenblocksMiner/releases) section.

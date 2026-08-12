@@ -19,6 +19,31 @@
 // Confirmation retries run after the normal drain step, outside the drain-rate budget,
 // and are skipped entirely while the breaker is OPEN.
 //
+// A confirmation 200 is only trusted when its BODY proves it (security finding 4): the
+// protocol runs over plaintext HTTP, so any intermediary (captive portal, transparent
+// proxy, hostile MITM) can answer 200 to everything and would otherwise permanently
+// suppress resubmission of real finds. gpage.py:331-364 returns the stored row
+// (block_id/hash_to_verify/key/account/created_at) on 200, so we require a JSON body
+// whose "key" is byte-equal to the record's key, and — when present — a hash_to_verify
+// byte-equal to the record's immutable hash. See confirmationMatches() below for the
+// per-failure semantics; no malformed 200 is ever an ack, and none ever demotes the
+// record to Pending either (the server may genuinely hold the row; only a real 404
+// proves absence).
+//
+// Fatal-error boundary (security finding 8): the submission thread wraps every step so a
+// JournalError (or anything else) thrown from counts/recordAttempt/recordDifficulty/
+// unpark can never escape threadLoop_ and std::terminate the whole miner. On the first
+// exception the step logs at Error, increments Metrics::thread_loop_exceptions, invokes
+// the optional fatal callback, and stops the loop (a submission layer that cannot touch
+// its journal must not spin). First exception wins; the thread exits cleanly and stays
+// joinable — stop()/~SubmissionManager still work.
+//
+// Wiring note for the integration owner (main.cpp is NOT wired here by design): call
+// setFatalCallback(...) before start() to be told when the drain thread has halted, e.g.
+// to surface a console banner or begin process shutdown. The callback runs at most once,
+// ON the submission thread — it must not call stop()/join on this manager (self-join
+// deadlock) and should hand off to another thread for anything heavy.
+//
 // All time is injectable: a monotonic ms clock for pacing/breaker and a wall epoch-ms
 // clock for journal timestamps and the XUNI window estimate.
 
@@ -70,11 +95,26 @@ public:
         ConfirmRetried,  // no submission was due, but confirmation retries were driven
     };
 
+    // How a /get_block 200 body relates to the record it is supposed to confirm.
+    // Anything but Confirmed keeps the record AcceptedUnconfirmed with the normal
+    // backoff — never Acked (the 200 proved nothing) and never Pending (only a real
+    // 404 proves the row is absent; resubmitting on a garbled body would double-spend
+    // drain budget against a server that may genuinely hold the row).
+    enum class ConfirmBodyCheck {
+        Confirmed,     // JSON object; "key" byte-equal; hash_to_verify absent or byte-equal
+        Malformed,     // not a JSON object, or no scalar "key" field — an untrusted 200
+        KeyMismatch,   // describes some OTHER row: not a confirmation of ours
+        HashMismatch,  // our key but a different stored hash — serious, logged at Error
+    };
+
     using MonotonicClock = std::function<std::int64_t()>;  // ms
     using WallClock = std::function<std::int64_t()>;       // epoch ms, UTC
     using OutcomeCallback = std::function<void(
         const FindRecord&, const Classification&, std::optional<int>)>;
     using NetworkStateCallback = std::function<void(CircuitBreaker::State)>;
+    // Fired at most once, on the submission thread, when an exception halted the drain
+    // loop (see the fatal-error boundary note above). Must not call stop() on this manager.
+    using FatalCallback = std::function<void(const std::string&)>;
 
     // Default clocks (std::chrono) are used when null. Split constructors instead of
     // `Config cfg = Config{}`: GCC rejects that default argument inside the enclosing class.
@@ -92,6 +132,8 @@ public:
     void notifyFindAppended();  // wake the drain thread after journal.append
 
     // One scheduling step; the thread loop calls this, and tests drive it directly.
+    // Never throws: this is the fatal-error boundary (finding 8). After a fatal
+    // exception it is inert and returns Idle.
     StepResult runOnce();
 
     // --- difficulty integration (PLAN §3.3, §10.4) ---
@@ -101,6 +143,9 @@ public:
     // Fired after an outcome has been durably recorded in the journal.
     void setOutcomeCallback(OutcomeCallback cb);
     void setNetworkStateCallback(NetworkStateCallback cb);
+    // See FatalCallback above. Not wired in main.cpp by this module — the integration
+    // owner installs it before start().
+    void setFatalCallback(FatalCallback cb);
     // Called by the DifficultyService poller too, so trend tracking sees every sample.
     void observeDifficulty(std::uint32_t difficulty);
     DifficultyTrend difficultyTrend() const { return trend_; }
@@ -135,6 +180,11 @@ public:
         std::uint64_t transport_failures = 0;
         std::uint64_t probes = 0;
         std::uint64_t margin_changes = 0;       // headroom ramp steps taken (PLAN §10.7)
+        std::uint64_t confirm_body_rejected = 0;  // /get_block 200s whose body failed
+                                                  // validation (finding 4): malformed,
+                                                  // wrong key, or mismatched hash
+        std::uint64_t thread_loop_exceptions = 0; // exceptions caught at the step boundary
+                                                  // (finding 8); >0 means the loop halted
     };
     Metrics metrics() const;
     CircuitBreaker::State breakerState() const { return breaker_.state(); }
@@ -145,9 +195,17 @@ public:
     static std::optional<std::int64_t> parseHttpDateMs(const std::string& date_header);
     // XUNI :55-:05 window as seen at the given (server) wall time.
     static XuniWindowState xuniWindowAt(std::int64_t server_epoch_ms);
+    // Pure: does a /get_block 200 body actually describe `record`? (finding 4; see the
+    // header comment and ConfirmBodyCheck). Exposed for unit tests.
+    static ConfirmBodyCheck confirmationMatches(const FindRecord& record,
+                                                const std::string& body);
 
 private:
     void threadLoop_();
+    StepResult runStep_();  // the real step; runOnce() is its exception boundary
+    // Finding 8: first-exception-wins fatal path — logs, counts, fires the callback,
+    // and clears running_ so the loop (if any) exits. Safe from any thread; idempotent.
+    void handleFatal_(const std::string& what);
     void trackServerDate_(const TransportResult& r);
     void handleDifficultyBody_(const std::string& body);
     void emitOutcome_(const FindRecord& record, const Classification& classification,
@@ -176,6 +234,8 @@ private:
     std::function<void(std::uint32_t)> difficulty_hint_cb_;
     OutcomeCallback outcome_cb_;
     NetworkStateCallback network_state_cb_;
+    FatalCallback fatal_cb_;                 // guarded by state_mutex_
+    std::atomic<bool> fatal_{false};         // latched by the first caught exception
     std::optional<std::uint32_t> last_difficulty_;
     DifficultyTrend trend_ = DifficultyTrend::Unknown;
     std::optional<std::int64_t> server_offset_ms_;

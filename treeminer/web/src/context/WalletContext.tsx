@@ -1,6 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { BrowserProvider } from "ethers";
-import { getToken, setToken, clearToken, apiFetch } from "../api";
+import { apiFetch } from "../api";
 
 interface WalletCtx {
   address: string | null;
@@ -22,21 +22,19 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   // Restore session on mount
   useEffect(() => {
-    const token = getToken();
-    if (!token) return;
     apiFetch<{ eth_address: string }>("/api/auth/me")
       .then((me) => {
         if (me.eth_address) setAddress(me.eth_address);
-        else { clearToken(); }
+        else { setAddress(null); }
       })
-      .catch(() => { clearToken(); });
+      .catch(() => { setAddress(null); });
   }, []);
 
   // Listen for MetaMask account/chain changes
   useEffect(() => {
     const eth = (window as any).ethereum;
     if (!eth) return;
-    const handleChange = () => { clearToken(); setAddress(null); };
+    const handleChange = () => { void apiFetch("/api/auth/logout", { method: "POST" }); setAddress(null); };
     eth.on("accountsChanged", handleChange);
     eth.on("chainChanged", handleChange);
     return () => {
@@ -63,13 +61,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
       const signature = await signer.signMessage(message);
 
-      const result = await apiFetch<{ token: string; address: string }>("/api/auth/verify", {
+      const result = await apiFetch<{ address: string }>("/api/auth/verify", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ address: addr, signature, nonce }),
       });
 
-      setToken(result.token);
       setAddress(result.address);
     } catch (e: any) {
       if (e?.code !== 4001) console.error("Wallet connect failed:", e);
@@ -79,7 +76,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const disconnect = useCallback(() => {
-    clearToken();
+    void apiFetch("/api/auth/logout", { method: "POST" });
     setAddress(null);
   }, []);
 

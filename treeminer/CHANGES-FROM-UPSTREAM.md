@@ -106,4 +106,9 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   (systemd `WorkingDirectory`, HiveOS wrappers) silently opened a fresh empty journal and
   stranded every previously queued find in the orphaned file — the log line turns that
   from a mystery into an instant diagnosis, and the config key removes the hazard.
+- **Private-by-default local console** (`LocalServer.*`, `main.cpp`): the read-only miner
+  dashboard now listens on `127.0.0.1:42069` instead of every interface. Operators must
+  explicitly opt into LAN exposure with `--dashboard-bind <IP>` or the `dashboard_bind`
+  config key. IP literals are validated at startup, IPv6 browser URLs are bracketed, and
+  the startup message reports both the usable URL and actual listen address.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

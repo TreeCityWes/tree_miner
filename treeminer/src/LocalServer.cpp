@@ -5,7 +5,9 @@
 #include <mutex>
 
 #include <nlohmann/json.hpp>
-#ifndef _WIN32
+#ifdef _WIN32
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -32,6 +34,9 @@ std::string s_stats_cache;
 std::chrono::steady_clock::time_point s_stats_cache_at{};
 
 std::string buildStatsSnapshot() {
+    // Base snapshot from StatReporter. This already carries the fatal durability state
+    // ("fatalDurabilityFailure" + reason, review finding 6), so /stats and
+    // /api/v1/status expose it without a second read of the flag here.
     nlohmann::json result = nlohmann::json::parse(getGpuStatsJson());
 
     if (s_submission_manager) {
@@ -107,9 +112,17 @@ crow::SimpleApp& getApp() {
     return s_app;
 }
 
-std::string getConsoleUrl() {
-    static const std::string url = [] {
-        std::string address = "127.0.0.1";
+bool isValidDashboardBind(const std::string& address) {
+    in_addr ipv4{};
+    in6_addr ipv6{};
+    return inet_pton(AF_INET, address.c_str(), &ipv4) == 1 ||
+           inet_pton(AF_INET6, address.c_str(), &ipv6) == 1;
+}
+
+std::string getConsoleUrl(const std::string& bind_address) {
+    std::string address = bind_address;
+    if (bind_address == "0.0.0.0") {
+        address = "127.0.0.1";
 #ifndef _WIN32
         const int fd = socket(AF_INET, SOCK_DGRAM, 0);
         if (fd >= 0) {
@@ -130,13 +143,18 @@ std::string getConsoleUrl() {
             close(fd);
         }
 #endif
-        return "http://" + address + ":42069";
-    }();
-    return url;
+    } else if (bind_address == "::") {
+        // The wildcard address is not a usable browser destination. Loopback is
+        // always valid for a listener accepting connections on every IPv6 interface.
+        address = "::1";
+    }
+
+    const bool ipv6 = address.find(':') != std::string::npos;
+    return "http://" + (ipv6 ? "[" + address + "]" : address) + ":42069";
 }
 
-void startServer() {
-    s_app.bindaddr("0.0.0.0").port(42069).multithreaded().run();
+void startServer(const std::string& bind_address) {
+    s_app.bindaddr(bind_address).port(42069).multithreaded().run();
 }
 
 void setupRoutes(treeminer::IFindJournal* journal,

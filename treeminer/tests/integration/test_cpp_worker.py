@@ -78,10 +78,15 @@ def find_miner_binary() -> Optional[str]:
     return None
 
 
+# The mock server now rejects anonymous callers on mutating/sensitive routes,
+# so the harness authenticates with the default (test-only) admin key.
+ADMIN_KEY = "admin-test-key-do-not-use-in-production"
+
+
 def api_get(path: str) -> dict:
     """Make a GET request to the mock server REST API."""
     conn = http.client.HTTPConnection("localhost", API_PORT, timeout=10)
-    conn.request("GET", path)
+    conn.request("GET", path, headers={"X-API-Key": ADMIN_KEY})
     resp = conn.getresponse()
     data = resp.read().decode()
     conn.close()
@@ -91,7 +96,8 @@ def api_get(path: str) -> dict:
 def api_post(path: str, body: dict) -> dict:
     """Make a POST request to the mock server REST API."""
     conn = http.client.HTTPConnection("localhost", API_PORT, timeout=10)
-    conn.request("POST", path, json.dumps(body), {"Content-Type": "application/json"})
+    conn.request("POST", path, json.dumps(body),
+                 {"Content-Type": "application/json", "X-API-Key": ADMIN_KEY})
     resp = conn.getresponse()
     data = resp.read().decode()
     conn.close()
