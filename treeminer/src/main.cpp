@@ -42,6 +42,9 @@
 #include "LocalServer.h"
 #include "BlockSubmitter.h"
 #include "hashapi/HashApiCli.h"
+#include "hashapi/HashApiSelfTest.h"
+#include "hashapi/CpuHashBackend.h"
+#include "hashapi/CudaHashBackend.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -534,6 +537,34 @@ int main(int argc, const char *const *argv)
     }
     std::cout << "Machine ID: " << machineId << std::endl;
 
+    // Fail closed before starting journals, network threads, dashboards, or mining. A
+    // deterministic reference comparison catches a broken CUDA kernel even when its output
+    // happens to contain XEN11 and would otherwise look like a valuable find.
+    try {
+        hashapi::CpuHashBackend cpuReference;
+        for (const int deviceIndex : usedDevices) {
+            CudaBackend selfTestDevice(deviceIndex);
+            hashapi::CudaHashBackend cudaCandidate(selfTestDevice);
+            const hashapi::HashApiSelfTestResult selfTest = hashapi::runCpuCudaSelfTest(
+                cpuReference,
+                cudaCandidate,
+                deviceIndex,
+                hashapi::kGpuFirstBlocksEnabled);
+            if (!selfTest.ok) {
+                std::cerr << "FATAL: GPU #" << deviceIndex
+                          << " failed startup Argon2 CPU/CUDA self-test: " << selfTest.error
+                          << ". Mining was not started." << std::endl;
+                return EXIT_FAILURE;
+            }
+            std::cout << "GPU #" << deviceIndex
+                      << " Argon2 CPU/CUDA self-test passed." << std::endl;
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "FATAL: startup Argon2 CPU/CUDA self-test could not run: "
+                  << e.what() << ". Mining was not started." << std::endl;
+        return EXIT_FAILURE;
+    }
+
     // --- TreeMiner journal-first pipeline (replaces the upstream in-RAM closure queue) ---
     // Every find is durably journaled before any network attempt; the SubmissionManager
     // drains the journal with outage-aware retry, parking, and /get_block confirmation.
@@ -680,7 +711,6 @@ int main(int argc, const char *const *argv)
                 }
                 message << " - " << detail;
                 logger.log(message.str());
-                Logger::logToConsole("\033[2K\r" + message.str() + "\n");
             });
         submissionManager->setNetworkStateCallback(
             [](treeminer::CircuitBreaker::State state) {
@@ -690,8 +720,9 @@ int main(int argc, const char *const *argv)
             std::lock_guard<std::mutex> lock(mtx);
             if (globalDifficulty != static_cast<int>(d)) {
                 globalDifficulty = static_cast<int>(d);
-                Logger::logToConsole("Difficulty updated from server hint: " +
-                                     std::to_string(d) + "\n");
+                ConsoleLog::event(ConsoleLog::Level::Info, "DIFFICULTY",
+                                  "updated from server hint | current=" +
+                                      std::to_string(d));
             }
         });
         globalDifficultyObserver = [&manager = *submissionManager](std::uint32_t d) {
@@ -848,25 +879,16 @@ int main(int argc, const char *const *argv)
                    " mined_m=" + std::to_string(payload.memory_cost) +
                    (journaled ? " journaled" : " NOT-JOURNALED"));
 
-        int observedDifficulty = 0;
-        {
-            std::lock_guard<std::mutex> lock(mtx);
-            observedDifficulty = globalDifficulty;
-        }
         std::ostringstream findMessage;
-        findMessage << "source=" << source << " | id=";
+        findMessage << "#";
         if (journaled) {
             findMessage << journalId;
+        } else if (sunk) {
+            findMessage << "fallback";
         } else {
             findMessage << "none";
         }
-        findMessage << " | kind=" << treeminer::to_string(payload.kind)
-                    << " | mined_m=" << payload.memory_cost
-                    << " | observed_m=" << observedDifficulty
-                    << " | margin="
-                    << (static_cast<std::int64_t>(payload.memory_cost) -
-                        static_cast<std::int64_t>(observedDifficulty))
-                    << " | journaled=" << (journaled ? "yes" : "no");
+        findMessage << "  •  " << source << "  •  m=" << payload.memory_cost;
 
         std::string findClass;
         if (payload.kind == treeminer::FindKind::XEN11) {
@@ -888,15 +910,14 @@ int main(int argc, const char *const *argv)
                 globalXuniBlockCount++;
             }
         }
-        findMessage << " | class=" << findClass;
         if (journaled) {
-            findMessage << " | Secured locally; uplink queued.";
+            findMessage << "  •  saved locally  •  queued";
         } else if (sunk) {
-            findMessage << " | Journal down; captured in fallback sink (imports next start).";
+            findMessage << "  •  saved to fallback";
         } else {
             // Must not read as "handled": nothing durable holds this find, and the
             // fatal state declared above is about to take the whole miner down.
-            findMessage << " | LOCAL SAVE FAILED; not queued. HALTING miner — find is at risk.";
+            findMessage << "  •  SAVE FAILED  •  stopping";
         }
         ConsoleLog::event(journaled ? ConsoleLog::Level::Found
                                     : (sunk ? ConsoleLog::Level::Warn
@@ -958,64 +979,57 @@ int main(int argc, const char *const *argv)
             const std::uint64_t combinedHashCount =
                 static_cast<std::uint64_t>(globalHashCount.load()) + cpuStats.attempts;
             stream << "\033[2K\r";
-            stream << std::fixed << std::setprecision(2)
+            stream << std::fixed << std::setprecision(1)
                    << (totalHashrate + cpuStats.hashrate) / 1000.0f
-                   << " kH/s | " << combinedHashCount << " hashes | ";
+                   << " kH/s  •  " << activeDevices.size() << " GPU"
+                   << (activeDevices.size() == 1 ? "" : "s") << "  •  ";
+            if (combinedHashCount >= 1'000'000) {
+                stream << std::fixed << std::setprecision(1)
+                       << combinedHashCount / 1'000'000.0 << "M hashes";
+            } else if (combinedHashCount >= 1'000) {
+                stream << std::fixed << std::setprecision(1)
+                       << combinedHashCount / 1'000.0 << "K hashes";
+            } else {
+                stream << combinedHashCount << " hashes";
+            }
+            stream << "  •  ";
             if (hours > 0) {
                 stream << hours << ":";
             }
             stream  << std::setw(2) << std::setfill('0') << minutes << ":";
-            stream << std::setw(2) << std::setfill('0') << seconds << ", ";
-            stream << " | " << activeDevices.size() << " GPU"
-                   << (activeDevices.size() == 1 ? "" : "s");
+            stream << std::setw(2) << std::setfill('0') << seconds;
             if (streamCount > static_cast<int>(activeDevices.size())) {
-                stream << " (" << streamCount << " streams)";
+                stream << "  •  " << streamCount << " streams";
             }
             if (cpuStats.active_workers > 0) {
                 if (cpuStats.paused_for_difficulty) {
-                    stream << " | CPU idle (diff>" << cpuStats.max_difficulty << ")";
+                    stream << "  •  CPU idle";
                 } else {
-                    stream << " | CPU:" << cpuStats.active_workers << " @ "
-                           << std::fixed << std::setprecision(2)
-                           << cpuStats.hashrate / 1000.0 << " kH/s";
+                    stream << "  •  CPU " << cpuStats.active_workers;
                 }
             }
             if(globalSuperBlockCount > 0) {
-                stream << " | " << RED << "super " << globalSuperBlockCount << RESET;
+                stream << "  •  " << RED << globalSuperBlockCount << " super" << RESET;
             }
             if(globalNormalBlockCount > 0) {
-                stream << " | " << GREEN << "blocks " << globalNormalBlockCount << RESET;
+                stream << "  •  " << GREEN << globalNormalBlockCount << " block"
+                       << (globalNormalBlockCount == 1 ? "" : "s") << RESET;
             }
             if(globalXuniBlockCount > 0) {
-                stream << " | " << YELLOW << "xuni " << globalXuniBlockCount << RESET;
+                stream << "  •  " << YELLOW << globalXuniBlockCount << " XUNI" << RESET;
             }
-            // Queue depth + network state (terminal-status work) alongside the submission
-            // counters (pool-outage work): one line answers "is anything stuck?".
-            stream << " | queue " << globalQueuedXnm << "/" << globalQueuedXuni
-                   << " | net " << networkStateLabel(globalNetworkState);
+            const std::size_t queued = globalQueuedXnm.load() + globalQueuedXuni.load();
+            if (queued > 0) stream << "  •  " << queued << " queued";
             SubmissionLineStats submissionStats;
             if (globalSubmissionLineStatsProvider &&
                 globalSubmissionLineStatsProvider(submissionStats)) {
-                stream << " | submit " << submissionStats.submitted;
-                if (submissionStats.resubmitted > 0) {
-                    stream << " (retry " << submissionStats.resubmitted << ")";
+                if (submissionStats.confirmed > 0) {
+                    stream << "  •  " << submissionStats.confirmed << " confirmed";
                 }
-                stream << " | confirmed " << submissionStats.confirmed;
-                if (submissionStats.accepted_unconfirmed > 0) {
-                    stream << " | unconfirmed " << submissionStats.accepted_unconfirmed;
-                }
-                if (submissionStats.transport_failures > 0) {
-                    stream << " | failures " << submissionStats.transport_failures;
-                }
-                if (submissionStats.pool_down) {
-                    stream << " | " << RED << "pool DOWN" << RESET;
-                }
-            } else {
-                stream << " | last " << submissionStateLabel(globalLastSubmission);
             }
-            stream << " | diff " << difficulty;
+            stream << "  •  diff " << difficulty;
             if (!terminalUi) {
-                Logger::logToConsole(stream.str());
+                ConsoleLog::progress(stream.str());
             }
         }
     };

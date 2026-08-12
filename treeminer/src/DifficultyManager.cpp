@@ -94,7 +94,6 @@ void updateDifficulty()
             if (globalDifficulty != newDifficulty)
             {
                 globalDifficulty = newDifficulty;
-                Logger::logToConsole("Difficulty updated to " + std::to_string(globalDifficulty.load()) + "\n");
             }
         }
         if (globalDifficultyObserver)
@@ -109,14 +108,13 @@ void updateDifficulty()
             consecutiveDifficultyFailures = 0;
             if (globalDifficultyEndpointDown.exchange(false))
             {
-                ConsoleLog::event(ConsoleLog::Level::Ok, "POOL",
-                                  "RECOVERED | endpoint=/difficulty | prior_failures=" +
-                                      std::to_string(failures) +
-                                      " | difficulty=" + std::to_string(newDifficulty));
+                ConsoleLog::event(ConsoleLog::Level::Ok, "NETWORK",
+                                  "difficulty restored | current=" +
+                                      std::to_string(newDifficulty));
             }
             else
             {
-                ConsoleLog::event(ConsoleLog::Level::Info, "POOL",
+                ConsoleLog::event(ConsoleLog::Level::Info, "NETWORK",
                                   "difficulty poll restored | prior_failures=" +
                                       std::to_string(failures));
             }
@@ -127,18 +125,12 @@ void updateDifficulty()
         ++consecutiveDifficultyFailures;
         if (consecutiveDifficultyFailures == 1)
         {
-            ConsoleLog::event(ConsoleLog::Level::Warn, "POOL",
-                              "difficulty poll failed | failure=1/" +
-                                  std::to_string(kPoolDownFailureThreshold) +
-                                  " | " + e.what());
+            ConsoleLog::event(ConsoleLog::Level::Warn, "NETWORK",
+                              "difficulty unavailable; using cached value and retrying");
         }
         if (consecutiveDifficultyFailures == kPoolDownFailureThreshold)
         {
             globalDifficultyEndpointDown.store(true);
-            ConsoleLog::event(ConsoleLog::Level::Error, "POOL",
-                              "DOWN | endpoint=/difficulty | consecutive_failures=" +
-                                  std::to_string(consecutiveDifficultyFailures) +
-                                  " | polling continues every 10s | " + e.what());
         }
     }
 }

@@ -741,34 +741,20 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     }
 
     std::ostringstream submission_message;
-    submission_message << "id=" << rec->id
-                       << " | attempt=" << (rec->attempt_count + 1)
-                       << " | kind=" << logKind(rec->payload.kind)
-                       << " | mined_m=" << rec->payload.memory_cost
-                       << " | server_m=";
-    if (known_difficulty_before_response) {
-        submission_message << *known_difficulty_before_response;
+    submission_message << logKind(rec->payload.kind) << " #" << rec->id;
+    if (c.next_status == FindStatus::Acked) {
+        submission_message << " confirmed";
+    } else if (c.next_status == FindStatus::Pending) {
+        submission_message << " retry " << (rec->attempt_count + 1);
     } else {
-        submission_message << "unknown";
+        submission_message << " " << logStatus(c.next_status);
     }
-    submission_message << " | http=";
+    submission_message << " | m=" << rec->payload.memory_cost << " | ";
     if (res.transport_ok) {
-        submission_message << res.http_status;
+        submission_message << "HTTP " << res.http_status;
     } else {
-        submission_message << "transport_error";
+        submission_message << "network unavailable";
     }
-    if (c.server_difficulty_hint) {
-        submission_message << " | hint_m=" << *c.server_difficulty_hint
-                           << " | margin="
-                           << (static_cast<std::int64_t>(rec->payload.memory_cost) -
-                               static_cast<std::int64_t>(*c.server_difficulty_hint));
-    } else if (known_difficulty_before_response) {
-        submission_message << " | margin="
-                           << (static_cast<std::int64_t>(rec->payload.memory_cost) -
-                               static_cast<std::int64_t>(*known_difficulty_before_response));
-    }
-    submission_message << " | " << logStatus(c.next_status)
-                       << " | " << c.reason;
     const ConsoleLog::Level submission_level =
         c.next_status == FindStatus::Acked ? ConsoleLog::Level::Ok
         : c.next_status == FindStatus::ParkedDifficulty ||
@@ -860,22 +846,15 @@ void SubmissionManager::logBreakerTransition_(CircuitBreaker::State before,
     std::ostringstream message;
     if (after == CircuitBreaker::State::Open) {
         const auto retry_ms = std::max<std::int64_t>(0, breaker_.nextProbeAtMs() - mono_());
-        message << "DOWN | cause=" << cause
-                << " | consecutive_failures=" << breaker_.consecutiveFailures()
+        message << "submissions paused; finds remain queued"
                 << " | backlog=" << backlog
-                << " | next_probe_ms=" << retry_ms;
-        ConsoleLog::event(ConsoleLog::Level::Error, "POOL", message.str());
+                << " | retry_ms=" << retry_ms;
+        ConsoleLog::event(ConsoleLog::Level::Warn, "NETWORK", message.str());
     } else if (after == CircuitBreaker::State::HalfOpen) {
-        message << "PROBING | cause=" << cause
-                << " | backlog=" << backlog
-                << " | next=/verify trial";
-        ConsoleLog::event(ConsoleLog::Level::Warn, "POOL", message.str());
+        return;
     } else {
-        message << "RECOVERED | cause=" << cause
-                << " | outage_ms=" << outageDurationMs()
-                << " | backlog=" << backlog
-                << " | recovery_drain_per_second=" << drainRatePerSecond();
-        ConsoleLog::event(ConsoleLog::Level::Ok, "POOL", message.str());
+        message << "submissions restored | queued=" << backlog;
+        ConsoleLog::event(ConsoleLog::Level::Ok, "NETWORK", message.str());
     }
 }
 

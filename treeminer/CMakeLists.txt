@@ -179,6 +179,7 @@ if(TREEMINER_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests/unit/mining_common)
     add_subdirectory(tests/unit/cpu)
+    add_subdirectory(tests/unit/hashapi)
     add_subdirectory(tests/unit/journal)
     add_subdirectory(tests/unit/submit)
     add_subdirectory(tests/unit/platform)
@@ -230,6 +231,7 @@ set(SOURCE_FILES
     src/hashapi/HashApiEncoding.cpp
     src/hashapi/HashApiJson.cpp
     src/hashapi/HashApiMatching.cpp
+    src/hashapi/HashApiSelfTest.cpp
     src/hashapi/HashApiTuning.cpp
     src/hashapi/HashApiValidation.cpp
 )

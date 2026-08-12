@@ -11,6 +11,8 @@ constexpr std::size_t kHashApiKeyLength = 64;
 constexpr std::size_t kDefaultHashLength = 64;
 constexpr std::size_t kMaxTargetPatternLength = 128;
 constexpr std::size_t kMaxCpuBatchSize = 10000;
+// One source of truth for the CUDA path used by both startup validation and mining.
+constexpr bool kGpuFirstBlocksEnabled = false;
 
 struct HashApiRequest {
     std::string request_id;

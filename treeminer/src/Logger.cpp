@@ -1,4 +1,5 @@
 #include "Logger.h"
+#include "ConsoleLog.h"
 
 #include <chrono>
 #include <filesystem>
@@ -59,8 +60,7 @@ void Logger::logToConsole(const std::string& message) {
         consoleSink_(message);
         return;
     }
-    std::cout << message;
-    std::cout.flush();
+    ConsoleLog::line(message);
 }
 
 void Logger::setConsoleSink(std::function<void(const std::string&)> sink) {

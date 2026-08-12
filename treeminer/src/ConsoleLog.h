@@ -24,7 +24,7 @@ public:
     static void event(Level level, const std::string& component, const std::string& message) {
         std::lock_guard<std::mutex> lock(mutex());
         const bool color = colorEnabled();
-        if (color) {
+        if (interactiveTerminal()) {
             std::cout << "\033[2K\r";
         }
         std::cout << (color ? "\033[2m" : "") << timestamp()
@@ -46,7 +46,7 @@ public:
 
     static void progress(const std::string& message) {
         std::lock_guard<std::mutex> lock(mutex());
-        if (colorEnabled()) {
+        if (interactiveTerminal()) {
             std::cout << message;
         } else {
             // Redirected/systemd output cannot redraw one line. Emit a plain snapshot at
@@ -63,18 +63,39 @@ public:
         std::cout.flush();
     }
 
+    // Plain console messages share the progress/event lock so background threads cannot
+    // splice text into the live hashrate row. Interactive output always starts on a clean
+    // line; redirected output remains ordinary line-oriented text.
+    static void line(const std::string& message) {
+        std::lock_guard<std::mutex> lock(mutex());
+        if (interactiveTerminal()) {
+            std::cout << "\033[2K\r";
+        }
+        std::cout << message;
+        if (message.empty() || message.back() != '\n') {
+            std::cout << '\n';
+        }
+        std::cout.flush();
+    }
+
     static bool colorEnabled() {
         static const bool enabled = [] {
-            if (std::getenv("NO_COLOR") != nullptr || std::getenv("TERM") == nullptr) {
-                return false;
-            }
+            if (std::getenv("NO_COLOR") != nullptr) return false;
+            return interactiveTerminal();
+        }();
+        return enabled;
+    }
+
+    static bool interactiveTerminal() {
+        static const bool interactive = [] {
+            if (std::getenv("TERM") == nullptr) return false;
 #ifdef _WIN32
             return ::_isatty(::_fileno(stdout)) != 0;
 #else
             return ::isatty(STDOUT_FILENO) != 0;
 #endif
         }();
-        return enabled;
+        return interactive;
     }
 
 private:

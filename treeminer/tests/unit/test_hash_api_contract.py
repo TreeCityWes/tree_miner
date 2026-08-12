@@ -132,20 +132,25 @@ def test_terminal_status_reports_submission_outcomes_without_journal_io():
         "metrics.acked",
         "metrics.accepted_unconfirmed",
         "metrics.transport_failures",
-        'stream << " | submit "',
-        'stream << " | confirmed "',
-        '"pool DOWN"',
+        '<< " confirmed"',
+        '<< " queued"',
     ]:
         assert field in main
+    assert '" | net "' not in main
+    assert 'stream << " | " << RED << "pool DOWN"' not in main
+    assert "ConsoleLog::progress(stream.str())" in main
+    assert 'Logger::logToConsole("\\033[2K\\r" + message.str()' not in main
 
     manager = read("src/submit/SubmissionManager.cpp")
-    for transition in ["DOWN | cause=", "PROBING | cause=", "RECOVERED | cause="]:
+    for transition in ["submissions paused; finds remain queued", "submissions restored"]:
         assert transition in manager
+    assert '"POOL"' not in manager
 
     difficulty = read("src/DifficultyManager.cpp")
     assert "kPoolDownFailureThreshold = 3" in difficulty
-    assert '"DOWN | endpoint=/difficulty' in difficulty
-    assert '"RECOVERED | endpoint=/difficulty' in difficulty
+    assert "difficulty unavailable; using cached value and retrying" in difficulty
+    assert "difficulty restored" in difficulty
+    assert '"POOL"' not in difficulty
     assert "globalDifficultyEndpointDown" in difficulty
 
 
@@ -430,7 +435,12 @@ def test_mine_unit_uses_hash_api_batch_size_tuning_without_overriding_manual_lim
     assert "globalMaxBatchSize" in implementation
     assert "selected_batch_size == 0" in implementation
     assert "batchSize = batchDecision.selected_batch_size" in implementation
-    assert "request.gpu_first_blocks = true" in implementation
+    assert "request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled" in implementation
+    types = read("src/hashapi/HashApiTypes.h")
+    main = read("src/main.cpp")
+    assert "constexpr bool kGpuFirstBlocksEnabled = false" in types
+    assert "runCpuCudaSelfTest" in main
+    assert "Mining was not started" in main
     assert implementation.index("backend_.releaseBuffers()") < implementation.index("backend_.getFreeMemory()")
 
 
@@ -475,8 +485,8 @@ def test_live_miner_terminal_messages_describe_submission_lifecycle():
     main = read("src/main.cpp")
 
     for message in [
-        "Secured locally; uplink queued.",
-        "LOCAL SAVE FAILED; not queued.",
+        "saved locally  •  queued",
+        "SAVE FAILED  •  stopping",
         'outcome = "UPLINK ACCEPTED"',
         'detail = "confirmation pending"',
         'outcome = "UPLINK CONFIRMED"',
@@ -568,7 +578,7 @@ def test_double_persistence_failure_enters_fatal_state():
     assert "declareFatalDurabilityFailure(" in main
     assert "write failed AND fallback sink failed" in main
     assert "HALTING miner (exit nonzero for supervisor restart)" in main
-    assert "LOCAL SAVE FAILED; not queued. HALTING miner" in main
+    assert "SAVE FAILED  •  stopping" in main
 
     # main() translates the flag into a NONZERO exit after the mining threads join;
     # nothing calls std::exit from the callback thread.
