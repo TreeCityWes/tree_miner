@@ -303,7 +303,7 @@ void TerminalUi::render()
     }
     while (lines.size() + 1 < height) lines.push_back("|" + std::string(inner, ' ') + "|");
 
-    std::string footer = " Ctrl-C stop  |  " + getConsoleUrl() + "  |  " + identity.at("name").get<std::string>()
+    std::string footer = " Ctrl-C stop  |  " + getConsoleUrl(bindAddress_) + "  |  " + identity.at("name").get<std::string>()
         + "  |  " + identity.at("address").get<std::string>();
     lines.push_back("+" + std::string(inner, '-') + "+");
     if (lines.size() < height) lines.push_back(std::string(kDim) + fit(footer, width) + kReset);

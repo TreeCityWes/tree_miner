@@ -23,6 +23,9 @@ public:
     void stop() noexcept;
     void postEvent(const std::string& message);
     bool isRunning() const noexcept { return running_.load(); }
+    // Dashboard bind address, used only to render the console URL in the footer. Set before
+    // start(); defaults to loopback (the getConsoleUrl default when the dashboard is local).
+    void setBindAddress(std::string bind_address) { bindAddress_ = std::move(bind_address); }
 
 private:
     void run() noexcept;
@@ -35,6 +38,7 @@ private:
     std::condition_variable wake_;
     std::deque<std::string> events_;
     std::uint64_t frame_ = 0;
+    std::string bindAddress_ = "127.0.0.1";
 };
 
 } // namespace treeminer

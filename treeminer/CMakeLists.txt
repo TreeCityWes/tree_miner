@@ -5,6 +5,7 @@ option(TREEMINER_BUILD_TESTS "Build TreeMiner unit tests (journal + submit)" ON)
 option(XENBLOCKS_BUILD_HASHAPI_CLI "Build the standalone Hash API CLI" OFF)
 option(XENBLOCKS_HASHAPI_STUB_BACKEND "Build hashapi-cli with a deterministic stub backend for CLI smoke tests" OFF)
 option(XENBLOCKS_BUILD_HASH_DIAGNOSTICS "Build small hash diagnostic self-test tools" ON)
+option(XENBLOCKS_STATIC_LIBSTDCXX "Statically link libstdc++/libgcc for a portable binary; turn OFF when the CUDA host compiler is older than the toolchain that built the vcpkg deps" ON)
 
 # Remember whether the caller selected an architecture. CMake may initialize
 # CMAKE_CUDA_ARCHITECTURES while enabling CUDA, so this must be captured first.
@@ -254,7 +255,16 @@ if(XENBLOCKS_BUILD_MINER)
     if(WIN32)
         add_executable(${PROJECT_NAME} ${SOURCE_FILES} res/version.rc)
     else()
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+        # Static libstdc++/libgcc make the release binary portable across hosts. But when the
+        # CUDA host compiler (nvcc's -ccbin) is OLDER than the toolchain that built the vcpkg
+        # dependencies — e.g. CUDA 11.5 needs g++-10 as host, while vcpkg deps compile with the
+        # system g++-11 — the older static libstdc++ lacks symbols the newer deps reference
+        # (std::__throw_bad_array_new_length, a GCC-11 addition), and the link fails. Disable
+        # this on the split-compiler lane (-DXENBLOCKS_STATIC_LIBSTDCXX=OFF) to link the shared
+        # system libstdc++ instead.
+        if(XENBLOCKS_STATIC_LIBSTDCXX)
+            set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static-libgcc -static-libstdc++")
+        endif()
         add_executable(${PROJECT_NAME} ${SOURCE_FILES})
     endif()
 

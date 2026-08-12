@@ -1022,6 +1022,7 @@ int main(int argc, const char *const *argv)
 
     if (displayMode == "terminal") {
         terminalUi = std::make_unique<treeminer::TerminalUi>();
+        terminalUi->setBindAddress(dashboardBind);
         terminalUi->start();
         Logger::setConsoleSink([ui = terminalUi.get()](const std::string& message) {
             ui->postEvent(message);
