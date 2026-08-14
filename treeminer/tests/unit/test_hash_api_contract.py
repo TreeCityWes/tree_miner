@@ -451,7 +451,10 @@ def test_mine_unit_uses_hash_api_batch_size_tuning_without_overriding_manual_lim
     assert "request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled" in implementation
     types = read("src/hashapi/HashApiTypes.h")
     main = read("src/main.cpp")
-    assert "constexpr bool kGpuFirstBlocksEnabled = false" in types
+    # Enabled under the CUDA 13 toolchain (nvcc 11.5 miscompiled this path — 12e241c).
+    # The value itself is a toolchain decision; what must never regress is the guard:
+    # the startup self-test gates mining on this exact flag, whatever its value.
+    assert "constexpr bool kGpuFirstBlocksEnabled = true" in types
     assert "runCpuCudaSelfTest" in main
     assert "Mining was not started" in main
     assert "GPU-first-blocks probe" in main

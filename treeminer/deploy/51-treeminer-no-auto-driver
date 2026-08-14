@@ -1,0 +1,14 @@
+// TreeMiner rig: never auto-upgrade the GPU driver or kernel underneath a
+// running miner. The 2026-08-11 06:04 unattended upgrade replaced the NVIDIA
+// driver (595.71 -> 595.84) and kernel mid-mining and preceded the Aug 13
+// reset storm. Driver/kernel updates remain available — they are just
+// deliberate, operator-run actions (`sudo apt upgrade`) with the miner idled.
+// Install: sudo cp deploy/51-treeminer-no-auto-driver /etc/apt/apt.conf.d/
+Unattended-Upgrade::Package-Blacklist {
+    "nvidia-";
+    "libnvidia-";
+    "linux-image";
+    "linux-headers";
+    "linux-modules";
+    "linux-generic";
+};

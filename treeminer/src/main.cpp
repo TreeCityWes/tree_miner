@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include <iostream>
 #include <filesystem>
 #include <fstream>
@@ -84,12 +85,44 @@ BOOL ctrlHandler(DWORD fdwCtrlType) {
 
 static void interruptSignalHandler(int signum)
 {
-    running = false;
-    if (globalPlatformManager) {
-        globalPlatformManager->stop();
+    (void)signum;
+    // Async-signal-safe only. Crow stop / condition_variable / unique_ptr methods
+    // allocate and were a live source of heap corruption on Ctrl-C and systemd SIGINT.
+    running.store(false, std::memory_order_release);
+}
+
+// TUI is for an interactive operator tty only. systemd, cron, and redirected
+// logs must never enter alternate-screen / prompt mode (hangs or races).
+static bool tuiForbidden()
+{
+    if (std::getenv("TREEMINER_NO_TUI") != nullptr) return true;
+    if (std::getenv("INVOCATION_ID") != nullptr) return true; // systemd service
+    return !ConsoleLog::interactiveTerminal();
+}
+
+static std::string resolveDisplayMode(std::string displayMode)
+{
+    if (displayMode != "logs" && displayMode != "terminal" && displayMode != "prompt") {
+        return {};
     }
-    cv.notify_all();
-    getApp().stop();
+    if (tuiForbidden() && displayMode != "logs") {
+        std::cerr << "Display '" << displayMode
+                  << "' is disabled for service/non-interactive runs; using logs.\n";
+        return "logs";
+    }
+    if (displayMode == "prompt") {
+        std::cout << "\nTreeMiner display\n"
+                  << "  1. Presentation terminal\n"
+                  << "  2. Scrolling logs\n"
+                  << "Select [1]: ";
+        std::string selection;
+        std::getline(std::cin, selection);
+        displayMode = selection == "2" ? "logs" : "terminal";
+        if (tuiForbidden() && displayMode != "logs") {
+            return "logs";
+        }
+    }
+    return displayMode;
 }
 
 std::string getMachineId(string userInputDeviceInfo)
@@ -250,18 +283,10 @@ int main(int argc, const char *const *argv)
         if (vm.count("display")) {
             displayMode = vm["display"].as<std::string>();
         }
-        if (displayMode != "logs" && displayMode != "terminal" && displayMode != "prompt") {
+        displayMode = resolveDisplayMode(displayMode);
+        if (displayMode.empty()) {
             std::cerr << "The display mode must be logs, terminal, or prompt." << std::endl;
             return -1;
-        }
-        if (displayMode == "prompt") {
-            std::cout << "\nTreeMiner display\n"
-                      << "  1. Presentation terminal\n"
-                      << "  2. Scrolling logs\n"
-                      << "Select [1]: ";
-            std::string selection;
-            std::getline(std::cin, selection);
-            displayMode = selection == "2" ? "logs" : "terminal";
         }
 
         if(vm.count("testFixedDiff")){
@@ -481,6 +506,7 @@ int main(int argc, const char *const *argv)
         }
 
         signal(SIGINT, interruptSignalHandler);
+        signal(SIGTERM, interruptSignalHandler);
 
         if (vm.count("saveConfig")) {
             appConfig.setAccountAddress(configuredIdentity->userAddress);
@@ -1115,12 +1141,17 @@ int main(int argc, const char *const *argv)
         }
     };
 
-    if (displayMode == "terminal") {
+    if (displayMode == "terminal" && !tuiForbidden()) {
         terminalUi = std::make_unique<treeminer::TerminalUi>();
         terminalUi->setBindAddress(dashboardBind);
         terminalUi->start();
         Logger::setConsoleSink([ui = terminalUi.get()](const std::string& message) {
             ui->postEvent(message);
+        });
+        ConsoleLog::setEventForwarder([ui = terminalUi.get()](ConsoleLog::Level,
+                                                              std::string component,
+                                                              std::string message) {
+            ui->postEvent(std::move(component) + "  " + std::move(message));
         });
     }
 
@@ -1237,7 +1268,6 @@ int main(int argc, const char *const *argv)
         std::ofstream urlFile("dashboard.url", std::ios::trunc);
         urlFile << ready;
     }
-    serverThread.detach();
     if(!donotupload){
         std::thread uploadStatThread(UploadDataPeriodically, 60);
         uploadStatThread.detach();
@@ -1246,6 +1276,15 @@ int main(int argc, const char *const *argv)
     while (running)
     {
         std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    // Stop HTTP before tearing down the journal. The server used to be detached and
+    // stopped from the SIGINT handler — that raced static destruction and was not
+    // async-signal-safe.
+    setupRoutes(nullptr, nullptr);
+    getApp().stop();
+    if (serverThread.joinable()) {
+        serverThread.join();
     }
 
     if (cpuMiningWorker) {
@@ -1260,6 +1299,7 @@ int main(int argc, const char *const *argv)
     }
 
     if (terminalUi) {
+        ConsoleLog::setEventForwarder({});
         Logger::clearConsoleSink();
         terminalUi->stop();
     }
@@ -1269,15 +1309,15 @@ int main(int argc, const char *const *argv)
         globalPlatformManager.reset();
     }
 
+    if (submissionManager) {
+        submissionManager->stop();
+    }
+
     if (globalFatalDurabilityFailure.load()) {
         // The submit callback proved a find could be persisted by NEITHER the journal
         // NOR the fallback sink (review finding 6). Exit NONZERO so a supervisor
         // (systemd Restart=always) brings the miner back up against a possibly-recovered
         // disk instead of leaving a "running" process that destroys every find it makes.
-        // On the Ctrl-C path the signal handler already stops the web server; no signal
-        // fired here, so stop it before returning or the detached crow thread would race
-        // static destruction.
-        getApp().stop();
         std::cerr << RED << "FATAL: durability failure — " << fatalDurabilityFailureReason()
                   << " — exiting nonzero for supervisor restart" << RESET << std::endl;
         return 2;

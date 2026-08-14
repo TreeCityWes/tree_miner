@@ -1,0 +1,34 @@
+[Unit]
+Description=TreeMiner XenBlocks GPU miner
+Documentation=file:///home/wes/tree_miner/treeminer/PLAN.md
+After=network-online.target nvidia-persistenced.service gpu-tune.service
+Wants=network-online.target gpu-tune.service
+# Must live in [Unit] on systemd 249. In [Service] it is ignored and the
+# default burst (5 / 10s) can leave the miner dead after a crash loop.
+StartLimitIntervalSec=0
+StartLimitBurst=0
+
+[Service]
+Type=simple
+User=wes
+Group=wes
+WorkingDirectory=/home/wes/tree_miner/runtime-live
+Environment=NO_COLOR=1
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+# Hard lock: miner refuses --display terminal / prompt even if ExecStart is edited.
+Environment=TREEMINER_NO_TUI=1
+# Driver is not always ready on the first second after a dirty reboot.
+ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do nvidia-smi >/dev/null 2>&1 && exit 0; sleep 2; done; echo "nvidia-smi not ready after 60s" >&2; exit 1'
+# --execute: systemd is the supervisor. --display logs only — never terminal/TUI.
+ExecStart=/home/wes/tree_miner/build-sm86-cuda13/bin/xenblocksMiner --execute --minerAddr 0xe4bB184781bBC9C7004e8DafD4A9B49d203BC9bC --totalDevFee 0 --display logs --dashboard-bind 0.0.0.0 --dashboard-port 42069 --journalPath /home/wes/tree_miner/runtime-live/treeminer-journal.db --cpuWorkers 0
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+KillSignal=SIGINT
+LimitCORE=infinity
+ExecStopPost=/home/wes/tree_miner/treeminer/deploy/on-miner-exit.sh
+StandardOutput=append:/home/wes/tree_miner/runtime-live/miner-service.log
+StandardError=append:/home/wes/tree_miner/runtime-live/miner-service.log
+
+[Install]
+WantedBy=multi-user.target

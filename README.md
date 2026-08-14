@@ -42,7 +42,7 @@ XUNI blocks accepted and `/get_block`-confirmed on day one).
 | `treeminer/src/journal/` | Durable SQLite find journal |
 | `treeminer/src/submit/` | Classifier, circuit breaker, drain scheduler, submission manager |
 | `treeminer/tests/` | Unit suites + mock XenBlocks server with fault injection |
-| `docs/` | Research docs `01`–`07` (reference miners, protocol, optimization plan, external reviews) |
+| `docs/` | Research docs `01`–`08` plus `09-ops-stability.md` (this-box crash/reset record) |
 | `docs/reviews/` | Verbatim review docs from other models (Kimmy, Grok, Sol) |
 | `research/` | Experiment notes and validation records |
 

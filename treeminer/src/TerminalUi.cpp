@@ -14,6 +14,7 @@
 #include <unistd.h>
 #endif
 
+#include "ConsoleLog.h"
 #include "StatReporter.h"
 #include "LocalServer.h"
 
@@ -166,8 +167,8 @@ void TerminalUi::start()
 {
     if (running_.exchange(true)) return;
     stopRequested_.store(false);
-    std::cout << "\033[?1049h\033[?25l\033[2J\033[H";
-    std::cout.flush();
+    ConsoleLog::setTuiOwnsStdout(true);
+    ConsoleLog::writeRaw("\033[?1049h\033[?25l\033[2J\033[H");
     thread_ = std::thread(&TerminalUi::run, this);
 }
 
@@ -178,8 +179,8 @@ void TerminalUi::stop() noexcept
     wake_.notify_all();
     if (thread_.joinable()) thread_.join();
     running_.store(false);
-    std::cout << "\033[?25h\033[?1049l";
-    std::cout.flush();
+    ConsoleLog::setTuiOwnsStdout(false);
+    ConsoleLog::writeRaw("\033[?25h\033[?1049l");
 }
 
 void TerminalUi::postEvent(const std::string& message)
@@ -319,8 +320,7 @@ void TerminalUi::render()
         if (i + 1 < height) frame << '\n';
     }
     frame << "\033[J";
-    std::cout << frame.str();
-    std::cout.flush();
+    ConsoleLog::writeRaw(frame.str());
     ++frame_;
 }
 

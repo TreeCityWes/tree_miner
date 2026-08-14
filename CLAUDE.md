@@ -24,7 +24,8 @@ We should be able to store the hashes and timestamps locally then resubmit when 
 - `docs/` — our research documentation, numbered by source:
   - `01-xenminer-reference.md`, `02-xenblocksminer-woody.md`, `03-xgpu-jozef.md`,
     `04-official-docs-ecosystem.md`, `05-synthesis-new-miner-design.md`,
-    `06-optimization-plan.md`, `07-external-reviews.md`
+    `06-optimization-plan.md`, `07-external-reviews.md`, `08-improvement-plan.md`,
+    `09-ops-stability.md` (this-box reset/segfault record; follow up before changing the live miner)
   - `docs/reviews/` — verbatim review docs from other models (Kimmy, Grok, Sol)
 - `research/` — scratch notes, experiments, validation records
 - `treeminer/` — the miner itself (fork of XenblocksMiner). `treeminer/PLAN.md` is the

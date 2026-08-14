@@ -12,7 +12,11 @@ constexpr std::size_t kDefaultHashLength = 64;
 constexpr std::size_t kMaxTargetPatternLength = 128;
 constexpr std::size_t kMaxCpuBatchSize = 10000;
 // One source of truth for the CUDA path used by both startup validation and mining.
-constexpr bool kGpuFirstBlocksEnabled = false;
+// True requires the CUDA 13+ toolchain: nvcc 11.5 miscompiled the first-blocks kernel
+// (wrong digests, server 401s — commit 12e241c); under CUDA 13.3 the same kernel matches
+// the CPU reference on real sm_86 hardware. The startup self-test exercises this exact
+// flag and refuses to mine on mismatch, so a bad toolchain fails closed at launch.
+constexpr bool kGpuFirstBlocksEnabled = true;
 
 struct HashApiRequest {
     std::string request_id;

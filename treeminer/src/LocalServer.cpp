@@ -112,7 +112,11 @@ std::string getCachedStatsSnapshot() {
     std::lock_guard<std::mutex> lock(s_stats_cache_mutex);
     const auto now = std::chrono::steady_clock::now();
     if (s_stats_cache.empty() || now - s_stats_cache_at >= std::chrono::seconds(2)) {
-        s_stats_cache = buildStatsSnapshot();
+        try {
+            s_stats_cache = buildStatsSnapshot();
+        } catch (const std::exception& e) {
+            s_stats_cache = nlohmann::json{{"ok", false}, {"error", e.what()}}.dump();
+        }
         s_stats_cache_at = now;
     }
     return s_stats_cache;

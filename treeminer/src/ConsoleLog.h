@@ -1,8 +1,10 @@
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <ctime>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <mutex>
@@ -22,30 +24,47 @@ public:
     enum class Level { Debug, Info, Found, Ok, Retry, Park, Warn, Error };
 
     static void event(Level level, const std::string& component, const std::string& message) {
-        std::lock_guard<std::mutex> lock(mutex());
-        const bool color = colorEnabled();
-        if (interactiveTerminal()) {
-            std::cout << "\033[2K\r";
+        std::function<void(Level, std::string, std::string)> forwarder;
+        {
+            std::lock_guard<std::mutex> lock(mutex());
+            forwarder = eventForwarder();
+            // TUI owns the tty. Writing here races its redraw in libc (segfault at
+            // a near-null address inside memcpy/strlen). Forward instead.
+            if (!tuiOwnsStdoutFlag().load(std::memory_order_acquire)) {
+                const bool color = colorEnabled();
+                if (interactiveTerminal()) {
+                    std::cout << "\033[2K\r";
+                }
+                std::cout << (color ? "\033[2m" : "") << timestamp()
+                          << (color ? "\033[0m" : "") << "  ";
+                if (color) {
+                    std::cout << levelColor(level);
+                }
+                std::cout << std::left << std::setw(6) << levelName(level);
+                if (color) {
+                    std::cout << "\033[0m\033[36m";
+                }
+                std::cout << std::left << std::setw(12) << component;
+                if (color) {
+                    std::cout << "\033[0m";
+                }
+                std::cout << std::right << message << '\n';
+                std::cout.flush();
+            }
         }
-        std::cout << (color ? "\033[2m" : "") << timestamp()
-                  << (color ? "\033[0m" : "") << "  ";
-        if (color) {
-            std::cout << levelColor(level);
+        if (forwarder) {
+            forwarder(level, component, message);
         }
-        std::cout << std::left << std::setw(6) << levelName(level);
-        if (color) {
-            std::cout << "\033[0m\033[36m";
-        }
-        std::cout << std::left << std::setw(12) << component;
-        if (color) {
-            std::cout << "\033[0m";
-        }
-        std::cout << std::right << message << '\n';
-        std::cout.flush();
     }
 
     static void progress(const std::string& message) {
+        if (tuiOwnsStdoutFlag().load(std::memory_order_acquire)) {
+            return;
+        }
         std::lock_guard<std::mutex> lock(mutex());
+        if (tuiOwnsStdoutFlag().load(std::memory_order_acquire)) {
+            return;
+        }
         if (interactiveTerminal()) {
             std::cout << message;
         } else {
@@ -98,9 +117,35 @@ public:
         return interactive;
     }
 
+    static void setTuiOwnsStdout(bool owns) {
+        tuiOwnsStdoutFlag().store(owns, std::memory_order_release);
+    }
+
+    static void setEventForwarder(std::function<void(Level, std::string, std::string)> forwarder) {
+        std::lock_guard<std::mutex> lock(mutex());
+        eventForwarder() = std::move(forwarder);
+    }
+
+    // Alternate-screen redraws must take the same lock as event/progress/line.
+    static void writeRaw(const std::string& text) {
+        std::lock_guard<std::mutex> lock(mutex());
+        std::cout << text;
+        std::cout.flush();
+    }
+
 private:
     static std::mutex& mutex() {
         static std::mutex value;
+        return value;
+    }
+
+    static std::atomic<bool>& tuiOwnsStdoutFlag() {
+        static std::atomic<bool> value{false};
+        return value;
+    }
+
+    static std::function<void(Level, std::string, std::string)>& eventForwarder() {
+        static std::function<void(Level, std::string, std::string)> value;
         return value;
     }
 

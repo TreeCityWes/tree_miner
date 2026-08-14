@@ -3,7 +3,7 @@
 **Status:** review + plan (not an implementation authority — `treeminer/PLAN.md` still owns the journal/submit contract).
 **Date:** 2026-08-12
 **Tree:** `4034ea1` (`main`, 2 commits ahead of `origin/main`)
-**This box:** 2× RTX 3060 (sm_86), host `nvcc` 11.5, driver CUDA 13.2. `xenblocks-pub-miner.service` is the process on the GPUs; TreeMiner journal at `runtime-live/` is intact (68 Acked / 35 Pending / 5 ParkedDifficulty).
+**This box:** 2× RTX 3060 (sm_86), host `nvcc` 11.5, driver NVIDIA 595.84 / CUDA 13.2. Live process is `treeminer.service` (not `xenblocks-pub-miner`). Journal at `runtime-live/`. Host reset storm 2026-08-10–13 — see `docs/09-ops-stability.md` before changing the live miner.
 
 This document is Grok’s deep dive after Fabel’s Codex review. Fabel already landed:
 

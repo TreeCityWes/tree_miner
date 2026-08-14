@@ -2,6 +2,7 @@
 #include "ConsoleLog.h"
 
 #include <chrono>
+#include <ctime>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -29,7 +30,12 @@ void Logger::log(const std::string& message) {
 std::string Logger::getCurrentTimestamp() {
     const auto now = std::chrono::system_clock::now();
     const auto time = std::chrono::system_clock::to_time_t(now);
-    const std::tm localTime = *std::localtime(&time);
+    std::tm localTime{};
+#ifdef _WIN32
+    localtime_s(&localTime, &time);
+#else
+    localtime_r(&time, &localTime);
+#endif
 
     std::ostringstream output;
     output << std::put_time(&localTime, "%m-%d %H:%M");

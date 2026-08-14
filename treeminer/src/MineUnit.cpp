@@ -114,12 +114,11 @@ hashapi::HashApiResult MineUnit::batchCompute(std::string salt, std::string keyP
 	request.device_id = backend_.getDeviceInfo().index;
 	request.allow_xuni = isWithinXuniWindow();
 	request.first_block_dynamic_chunk_auto = true;
-	// The GPU first-blocks (device-side Blake2b prehash) path produces INCORRECT Argon2
-	// digests on this build — verified by reproducing a live find three ways: the CPU
-	// reference and CUDA-with-CPU-first-blocks agree, while CUDA-with-GPU-first-blocks
-	// diverges and the real server rejects it (401 "Hash verification failed"). Every
-	// find made with it is unsubmittable, so it stays OFF until the kernel is corrected
-	// and covered by CPU/CUDA known-vector tests (see the startup self-test in main).
+	// GPU first-blocks (device-side Blake2b prehash). Under nvcc 11.5 this path was
+	// miscompiled (wrong digests, server 401s — commit 12e241c); the CUDA 13 toolchain
+	// generates correct code, verified against the CPU reference on real hardware. The
+	// startup self-test in main exercises this same flag and refuses to mine on mismatch,
+	// so the toggle lives in one place (HashApiTypes.h) and can never silently diverge.
 	request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled;
 	return hashBackend_.runBatch(request);
 }

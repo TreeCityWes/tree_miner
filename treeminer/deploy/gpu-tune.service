@@ -1,0 +1,13 @@
+[Unit]
+Description=NVIDIA persistence + stock 170W power limit
+After=nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+Before=treeminer.service
+
+[Service]
+Type=oneshot
+ExecStart=/home/wes/tree_miner/treeminer/deploy/gpu-boot-tune.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

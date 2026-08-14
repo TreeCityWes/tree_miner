@@ -106,9 +106,32 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   (systemd `WorkingDirectory`, HiveOS wrappers) silently opened a fresh empty journal and
   stranded every previously queued find in the orphaned file — the log line turns that
   from a mystery into an instant diagnosis, and the config key removes the hazard.
-- **Private-by-default local console** (`LocalServer.*`, `main.cpp`): the read-only miner
-  dashboard now listens on `127.0.0.1:42069` instead of every interface. Operators must
-  explicitly opt into LAN exposure with `--dashboard-bind <IP>` or the `dashboard_bind`
-  config key. IP literals are validated at startup, IPv6 browser URLs are bracketed, and
-  the startup message reports both the usable URL and actual listen address.
+- **LAN-reachable local console** (`LocalServer.*`, `main.cpp`): the read-only miner
+  dashboard listens on `0.0.0.0:42069` by default so operators can open it from any
+  device on their network (all routes are read-only stats; no keys or secrets served).
+  `--dashboard-bind 127.0.0.1` / the `dashboard_bind` config key restore a private
+  console. IP literals are validated at startup, IPv6 browser URLs are bracketed, and
+  the startup message prints the actual reachable LAN URL, not the bind address.
+- **Crash hardening (live segfaults Aug 12–13):** TUI and ConsoleLog no longer write
+  `std::cout` unlocked (libc near-null deref under `--display terminal`); SIGINT/SIGTERM
+  only flip `running` (Crow/`cv` from the handler was async-signal-unsafe); dashboard
+  thread is joined on shutdown instead of detached; file logger uses `localtime_r`.
+- **CUDA 13 toolchain + GPU first-blocks re-enabled** (`HashApiTypes.h`, `MineUnit.cpp`,
+  build lane `build-sm86-cuda13`): the invalid-digest bug that forced GPU first-blocks OFF
+  (commit `12e241c`) was an **nvcc 11.5 miscompilation**, not a kernel logic error — a
+  line-by-line RFC trace found no UB, and the identical kernel built with CUDA 13.3
+  matches the CPU reference on real sm_86 hardware and passes live server verification
+  (XUNI accepted HTTP 200). `kGpuFirstBlocksEnabled = true` again; the startup CPU/CUDA
+  self-test exercises this exact flag and refuses to mine on mismatch, so a regressive
+  toolchain fails closed at launch instead of mining unsubmittable finds. Side effect:
+  host CPU load roughly halves (first-block hashing returns to the GPU), which matters on
+  this rig — sustained CPU load correlates with the Aug 13–14 host reset storm. The
+  CUDA 13 lane is single-compiler (system g++-11 for host and device host-code), killing
+  the nvcc-11.5 g++-10 split and the `XENBLOCKS_STATIC_LIBSTDCXX=OFF` escape hatch.
+- **Operator deploy kit** (`deploy/`): systemd unit (journal-first flags, `Restart=always`,
+  `--display logs` enforced, core dumps enabled), boot fallback supervisor, GPU
+  persistence/power-limit unit, crash diagnosis + hardware-guard scripts, and an
+  unattended-upgrades blacklist (`51-treeminer-no-auto-driver`) so NVIDIA driver/kernel
+  updates are deliberate operator actions — an automatic 2 AM driver swap mid-mining
+  (2026-08-11) preceded the reset storm and the NVML mismatch that broke `nvidia-smi`.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.
