@@ -111,4 +111,46 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   explicitly opt into LAN exposure with `--dashboard-bind <IP>` or the `dashboard_bind`
   config key. IP literals are validated at startup, IPv6 browser URLs are bracketed, and
   the startup message reports both the usable URL and actual listen address.
+  **Superseded by `4034ea1`:** the default is now `0.0.0.0` again. A rig on a LAN, on
+  Vast.ai, or inside Docker is unreachable from a localhost bind without extra plumbing,
+  and the console is read-only operator telemetry — so reachability won. `--dashboard-bind
+  127.0.0.1` (or `dashboard_bind=127.0.0.1`) is the privacy opt-*out*; the validation,
+  bracketing, and startup-address reporting above all remain. Decision recorded in
+  `docs/08-improvement-plan.md` §8.1.
+- **CPU mining sidecar** (`src/CpuMiningWorker.*`, `main.cpp`, `tests/unit/cpu/`): optional
+  CPU Argon2id workers alongside the GPU, enabled with `--cpuWorkers N` (`0` disables).
+  Finds go through the same journal-first path as GPU finds — same durability, same
+  classifier, same confirmation — so the sidecar cannot become a second, lossier submission
+  route. CPU hashing only pays near the difficulty floor, so workers idle above a ceiling
+  (difficulty ≤ 100 by default, `45f843c`) and auto-resume when difficulty falls back.
+  Deterministic unit tests cover the worker lifecycle and the ceiling behaviour.
+- **Terminal UI / `--display` modes** (`src/TerminalUi.cpp`, `main.cpp`): `--display
+  terminal` opens a full-screen operator console on the terminal alternate screen, redrawn
+  at 2 fps, with a bounded recent-event rail (so a burst of events cannot scroll the
+  operational numbers away) and Ctrl-C restoring the original shell and scrollback.
+  `--display prompt` asks at boot. The default is `--display logs` — deliberately, because
+  an unattended restart must never block waiting on stdin.
+- **LAN web console + dashboard** (`src/LocalServer.cpp`, `src/DashboardPage.h`): the
+  hardcoded `:42069` Crow server now also serves `GET /` — a self-contained page (no CDN, no
+  external fonts, so it renders on a rig whose upstream network is down) with a live hashrate
+  sparkline, find markers on the timeline, journal/delivery state, and four switchable themes
+  persisted in `localStorage`. `GET /api/rig` is the machine-readable feed behind it, and
+  `--dashboard-port` / `dashboard_port` replaces the hardcoded port. Actual route set today:
+  `/healthz`, `/stats`, `/api/v1/status`, `/platform/status`, `/`, `/assets/hashfield.webp`,
+  `/api/rig`.
+- **Security hardening pass** (`09e1fef`; `src/platform/CommandEnvelope.*`, `LocalServer.cpp`,
+  `src/submit/SubmissionManager.cpp`): REST auth now fails closed instead of falling through
+  on a misconfigured/absent verifier; inherited MQTT command messages must carry an
+  HMAC-signed envelope before they are acted on; `/get_block` confirmation validates the
+  response *body* against both the key AND the hash, so a truncated or mismatched
+  confirmation can no longer mark a find `Acked`; and the submission thread gained a
+  top-level exception boundary — an escaping exception used to take the whole drain loop down
+  and leave the journal unattended.
+- **Startup CPU/CUDA Argon2 self-test guard** (`fd46dd2`, `src/hashapi/HashApiSelfTest.cpp`):
+  both hashing paths are checked against known vectors at startup, so a miscompiled kernel or
+  bad arch selection is caught in the first seconds rather than after hours of submitting
+  invalid digests.
+- **CUDA arch auto-detection + fat-binary tiers** (`CMakeLists.txt`, `CMakePresets.json`): the
+  build detects the architecture of the GPU visible at configure time and reports it, with
+  presets for pinned single-arch builds and a multi-tier fat binary for mixed fleets.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

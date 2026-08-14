@@ -81,8 +81,13 @@ short state below is only the resume snapshot.
 - The extracted pieces include a request/result contract, CPU/reference and CUDA
   backend paths, JSON-friendly command output, golden-hash checks, repeatable
   benchmark scripts, comparison tooling, timing metadata, and CUDA tuning knobs.
-- The miner-generated CUDA path now opts into the validated GPU first-block path
-  and automatic first-block chunk selection where supported.
+- GPU first-blocks remain **disabled** in the shipped miner
+  (`kGpuFirstBlocksEnabled = false`, `src/hashapi/HashApiTypes.h:15`): the device
+  first-block kernel produces invalid Argon2 digests, so the miner-generated CUDA
+  path computes first blocks on the CPU. Re-enabling is blocked on a CPU/CUDA
+  known-vector fix (commit `12e241c`; see `docs/HASH_OPTIMIZATION_GOAL.md`
+  Current Control Summary and the H1–H3 fix plan in the repository's
+  `docs/08-improvement-plan.md`).
 - Real mining work is memory-hard and should be optimized around `m=diff` in the
   thousands to tens of thousands. Current high-difficulty evidence includes
   d4096 generated-key CUDA GPU-first auto-batch at about `10.74k H/s` median and

@@ -16,7 +16,7 @@ file:line evidence there).
 
 | Parent | What we take | What we must NOT take |
 |---|---|---|
-| **woodysoil/XenblocksMiner** (MIT, README:211) | The codebase itself — Phase 1 is a direct fork: CUDA Argon2id engine (warp-per-hash, PTX G, oneshot kernel, GPU first-blocks, VRAM batching), difficulty poller, HiveOS/stats plumbing, build system | Its submission layer (in-RAM closure queue, empty-catch retry loop) — replaced wholesale |
+| **woodysoil/XenblocksMiner** (MIT, README:211) | The codebase itself — Phase 1 is a direct fork: CUDA Argon2id engine (warp-per-hash, PTX G, oneshot kernel, GPU first-blocks *(currently disabled — produces invalid digests; see §10 amendment)*, VRAM batching), difficulty poller, HiveOS/stats plumbing, build system | Its submission layer (in-RAM closure queue, empty-catch retry loop) — replaced wholesale |
 | **jacklevin74/xenminer** (NO license) | Protocol knowledge only: verify semantics, difficulty rules, response strings, XUNI window, duplicate-key behavior | **Any code.** Unlicensed = all rights reserved. Facts aren't copyrightable; lines are. |
 | **JozefJarosciak/xgpu** (no license) | Ops lessons only: per-GPU process isolation, GPU auto-detection, the failure catalog of what not to do | Any code (moot — deployment scripts around a vanished upstream) |
 
@@ -263,6 +263,25 @@ for the journal/submitter contract).
     verified extras — immutable payloads, confirmed acks, crash-safe ambiguity handling,
     server-clock-aware XUNI recovery, transparent accepted-yield.
 
+### §10 amendment — 2026-08-14 (supersedes conflicting text above)
+
+13. **GPU first-blocks are disabled.** `kGpuFirstBlocksEnabled = false`
+    (`src/hashapi/HashApiTypes.h:15`, commit `12e241c`): the device first-block kernel produces
+    invalid Argon2 digests, so first blocks are computed on the CPU and §1's inherited-features
+    list is amended accordingly. This is a correctness stop, not a performance choice — an
+    invalid digest is a rejected submission. Re-enabling is gated on the CPU/CUDA known-vector
+    fix tracked as H1–H3 (priority P3) in `docs/08-improvement-plan.md`; benchmark figures in
+    `docs/HASH_OPTIMIZATION_GOAL.md` that were measured on the GPU-first path do not describe
+    the shipped binary.
+14. **Dashboard bind default reverted to `0.0.0.0`.** The private-by-default console
+    (`127.0.0.1`) shipped and was then reversed in `4034ea1`: rigs on a LAN, on Vast.ai, or in
+    Docker are unreachable from a localhost bind, and the console is read-only operator
+    telemetry with no secrets served. `--dashboard-bind 127.0.0.1` / `dashboard_bind` is the
+    privacy opt-out, and `--dashboard-port` / `dashboard_port` replaces the hardcoded port.
+    §11.1 is amended to match. Bearer-token auth (`stats_token`) remains unimplemented and is
+    the open item for untrusted networks. Rationale recorded in `docs/08-improvement-plan.md`
+    §8.1.
+
 ---
 
 ## 11. Stats delivery (miner-hosted JSON API + dashboard) — ADOPTED
@@ -275,17 +294,31 @@ from Phase 1; the dashboard is a single self-contained static page instead.
 
 ```
 stats_enabled = true
-stats_bind    = 127.0.0.1   # default local-only; set 0.0.0.0 to expose on LAN
+stats_bind    = 0.0.0.0     # default all interfaces (LAN/Vast/Docker reachable);
+                            # set 127.0.0.1 for a private console
 stats_port    = 42069       # configurable (replaces hardcoded value)
 stats_token   =             # optional; when set, non-localhost requests require
                             # Authorization: Bearer <token>
 ```
 
-Security stance: no auth by default but bound to localhost by default. Exposing beyond LAN is
+Security stance: no auth, and bound to all interfaces by default so LAN and cloud rigs are
+reachable without extra plumbing; `--dashboard-bind 127.0.0.1` gives a private console
+(decision recorded in `docs/08-improvement-plan.md` §8.1). Exposing beyond LAN is
 the operator's job (reverse proxy); README says so explicitly. The endpoint is read-only —
 wallet address appears in stats (it's public on-chain anyway), but no keys/config are served.
 
 ### 11.2 JSON API
+
+**Status: future spec — none of the endpoints below are implemented yet.** They remain the
+target shape, not a description of the binary.
+
+**Implemented today** (`src/LocalServer.cpp`): `GET /healthz`, `GET /stats`,
+`GET /api/v1/status`, `GET /platform/status` (still present — the marketplace strip has not
+happened), `GET /` (dashboard), `GET /assets/hashfield.webp`, and `GET /api/rig` (the
+dashboard's aggregate feed, which covers much of what `/api/summary` + `/api/gpus` +
+`/api/journal` + `/api/server` were specified to return).
+
+Future spec:
 
 - `GET /api/summary` — hashrate (raw + accepted-yield), current difficulty + margin in effect,
   blocks found by kind (normal/super/XUNI), uptime, version.
@@ -301,7 +334,8 @@ wallet address appears in stats (it's public on-chain anyway), but no keys/confi
 - `GET /api/history` — in-memory ring buffer (~24 h at 30 s samples) of hashrate, difficulty,
   journal depth, breaker state — powers dashboard charts; no DB reads on the hot path.
 - `GET /metrics` — Prometheus text format mirroring the above (fleet Grafana for free).
-- Existing `/platform/status` removed with the marketplace strip.
+- Existing `/platform/status` removed with the marketplace strip *(not yet done — the route is
+  still served)*.
 
 All handlers read from an in-memory `StatsRegistry` (atomic counters + ring buffer) fed by the
 engine, journal, and submitter; journal COUNT queries run on a 5 s cache, never per-request.

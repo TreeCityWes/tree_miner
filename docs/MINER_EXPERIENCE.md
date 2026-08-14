@@ -33,9 +33,11 @@ a decision.
 
 ## Local Console
 
-The first dashboard release is served by the miner at
-`http://127.0.0.1:42069`. It is self-contained except for one bundled visual
-asset and remains available when the Xenblocks endpoint is offline.
+The first dashboard release is served by the miner on port `42069`. It listens on
+all interfaces by default, so it is reachable at the rig's own LAN address —
+`http://<rig-ip>:42069` — as well as at `http://127.0.0.1:42069` on the rig
+itself. It is self-contained except for one bundled visual asset and remains
+available when the Xenblocks endpoint is offline.
 
 Initial scope:
 
@@ -61,8 +63,12 @@ recent-event feed. It uses the terminal alternate screen so Ctrl-C restores the
 original shell and scrollback. The animated field is automatically omitted on
 narrow terminals where it would compete with operational data.
 
-The server binds to localhost by default. Remote use should go through an SSH
-tunnel until configurable binding and bearer authentication are implemented.
+The server binds all interfaces by default so LAN, Vast.ai, and Docker rigs are
+reachable without extra plumbing. Binding is configurable: `--dashboard-bind
+127.0.0.1` (or `dashboard_bind` in `config.txt`) restricts it to the rig itself,
+and `--dashboard-port` moves the port. Bearer authentication is still
+unimplemented, so on an untrusted network either bind to localhost and reach the
+console through an SSH tunnel, or firewall the port.
 
 ## Feature Priorities
 
