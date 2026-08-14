@@ -435,10 +435,13 @@ void SubmissionManager::updateMargin_() {
     in.breaker_open = open;
     in.outage_ms = open ? (now - outage_started_ms_.load()) : 0;
     if (cfg_.margin.mode == MarginMode::Auto) {
-        // Backlog = everything journaled that has not reached a terminal state. Parked and
-        // unconfirmed records count: they are finds we still owe the operator.
+        // Backlog = finds the margin can actually help recover right now: pending,
+        // awaiting confirmation, or parked only until the next XUNI window. Quarantined
+        // (operator-gated) and difficulty-parked (market-gated) rows are excluded — they
+        // never clear on their own, and counting them made one quarantined find impose a
+        // permanent memory-cost tax on every future hash.
         const IFindJournal::Counts c = journal_.counts();
-        in.backlog = c.pending + c.parked + c.accepted_unconfirmed + c.quarantined;
+        in.backlog = c.pending + c.accepted_unconfirmed + c.parked_xuni;
     }
 
     const std::uint32_t next = computeMargin(cfg_.margin, in);

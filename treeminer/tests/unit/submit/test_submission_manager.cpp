@@ -18,6 +18,7 @@ using treeminer::FindKind;
 using treeminer::FindStatus;
 using treeminer::FoundPayload;
 using treeminer::ITransport;
+using treeminer::MarginMode;
 using treeminer::SubmissionManager;
 using treeminer::TransportResult;
 using treeminer_test::FakeJournal;
@@ -886,6 +887,50 @@ int main() {
         m.stop();
         CHECK_EQ(m.metrics().thread_loop_exceptions, 1u);
         CHECK_EQ(j.throw_count, 1);
+    }
+
+    TEST_CASE("auto margin: quarantined and difficulty-parked rows are not a backlog");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.advance(30LL * 60000LL);  // minute 30: XUNI window closed, no unpark side effects
+        auto cfg = testConfig();
+        cfg.margin.mode = MarginMode::Auto;
+        cfg.margin_eval_interval_ms = 0;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        auto q = j.append(payload("mm02", FindKind::XEN11, 100000));
+        j.find_(q)->status = FindStatus::Quarantined;
+        auto d = j.append(payload("mm03", FindKind::XEN11, 100000));
+        j.find_(d)->status = FindStatus::ParkedDifficulty;
+        // Neither state can clear on its own, so neither may hold a margin open.
+        CHECK(m.runOnce() == StepResult::Idle);
+        CHECK_EQ(m.marginInEffect(), 0u);
+        // A window-parked XUNI is recoverable at the next window: it IS backlog.
+        auto x = j.append(payload("mm04", FindKind::XUNI, 100000));
+        j.find_(x)->status = FindStatus::ParkedXuniWindow;
+        m.runOnce();
+        CHECK_EQ(m.marginInEffect(), 1000u);
+    }
+
+    TEST_CASE("auto margin: pending backlog buys one step, returns to zero after drain");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.margin.mode = MarginMode::Auto;
+        cfg.margin_eval_interval_ms = 0;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        const auto p = payload("mm01", FindKind::XEN11, 100000);
+        auto id = j.append(p);
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(p)));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK_EQ(m.marginInEffect(), 1000u);  // evaluated while the find was pending
+        CHECK(j.record(id).status == FindStatus::Acked);
+        m.runOnce();  // re-evaluate with an empty backlog
+        CHECK_EQ(m.marginInEffect(), 0u);
     }
 
     return testfw::summary("submission_manager");
