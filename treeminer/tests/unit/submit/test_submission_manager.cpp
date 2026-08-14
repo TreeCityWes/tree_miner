@@ -889,6 +889,70 @@ int main() {
         CHECK_EQ(j.throw_count, 1);
     }
 
+    TEST_CASE("XUNI pressure tracks the window while the breaker is OPEN");
+    {
+        // The probe cap exists so an outage backoff cannot eat a submission window — which
+        // requires the pressure flag to update while the breaker is Open, the one state
+        // submitStep_ (its old sole updater) never runs in.
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        clk.wall = 1767227400000LL;  // 2026-01-01T00:30:00Z — XUNI window closed
+        SubmissionManager m(j, t, testConfig(), [&] { return clk.mono; },
+                            [&] { return clk.wall; });
+        const std::int64_t wall0 = 1767225600000LL;  // 00:00:00Z, for absolute jumps
+
+        j.append(payload("pp01", FindKind::XEN11, 100000));
+        for (int i = 0; i < 3; ++i) {
+            if (i > 0) {
+                clk.advance(60000);  // clear per-record backoff and pacing
+            }
+            t.submit_queue.push_back(down());
+            CHECK(m.runOnce() == StepResult::Submitted);
+        }
+        CHECK(m.breakerState() == CircuitBreaker::State::Open);
+
+        // Escalate the probe interval to its 60 s cap (every probe fails: empty queue
+        // yields transport-down). Probes at +5s, +10s, +20s, +40s.
+        for (std::int64_t step : {5000, 10000, 20000, 40000}) {
+            clk.advance(step);
+            CHECK(m.runOnce() == StepResult::Probed);
+        }
+        CHECK_EQ(t.difficulty_calls, 4);
+
+        // A XUNI lands mid-outage. Jump to 00:54:30 — still outside the window; the probe
+        // that fires here schedules the next one 60 s out, at 00:55:30, past window open.
+        j.append(payload("pp02", FindKind::XUNI, 100000));
+        clk.advance(wall0 + 3270000LL - clk.wall);  // 00:54:30
+        CHECK(m.runOnce() == StepResult::Probed);
+        CHECK_EQ(t.difficulty_calls, 5);
+
+        // 00:55:00 — window opens during the outage. The transition must unpark and the
+        // pressure flag must pull the far probe in to the 5 s cap.
+        clk.advance(30000);
+        m.runOnce();
+        CHECK_EQ(j.unpark_xuni_calls, 1);
+        CHECK_EQ(t.difficulty_calls, 5);  // pulled in to 00:55:05, not due yet
+        clk.advance(5000);                // 00:55:05 — 25 s before the un-pulled probe
+        CHECK(m.runOnce() == StepResult::Probed);
+        CHECK_EQ(t.difficulty_calls, 6);
+        clk.advance(5000);                // cadence holds at the 5 s cap while open
+        CHECK(m.runOnce() == StepResult::Probed);
+        CHECK_EQ(t.difficulty_calls, 7);
+
+        // 01:06:00 — window closed. Pressure releases: the probe that fires here goes
+        // back to the 60 s schedule, and a 5 s advance no longer produces a probe.
+        clk.advance(wall0 + 3960000LL - clk.wall);
+        CHECK(m.runOnce() == StepResult::Probed);
+        CHECK_EQ(t.difficulty_calls, 8);
+        clk.advance(5000);
+        CHECK(m.runOnce() == StepResult::Idle);
+        CHECK_EQ(t.difficulty_calls, 8);
+        clk.advance(55000);
+        CHECK(m.runOnce() == StepResult::Probed);
+        CHECK_EQ(t.difficulty_calls, 9);
+    }
+
     TEST_CASE("auto margin: quarantined and difficulty-parked rows are not a backlog");
     {
         FakeJournal j;

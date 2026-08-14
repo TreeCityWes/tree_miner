@@ -218,6 +218,10 @@ private:
                                 std::optional<long> retry_after_s) const;
     StepResult probeStep_();
     StepResult submitStep_();
+    // Runs every step, before the OPEN early-return: applies XUNI window transitions
+    // (unpark on open) and, while the breaker is OPEN, refreshes its xuni-pressure flag
+    // so the probe cap tracks the live window instead of freezing at outage start.
+    void updateXuniWindowAndPressure_();
     void logBreakerTransition_(CircuitBreaker::State before,
                                CircuitBreaker::State after,
                                const char* cause);

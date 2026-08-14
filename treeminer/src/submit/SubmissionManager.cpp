@@ -581,6 +581,10 @@ SubmissionManager::StepResult SubmissionManager::runStep_() {
     // Headroom is re-evaluated first so the outage clock advances even on steps that do no
     // network work at all (an OPEN breaker whose probe is not yet due still ages the outage).
     updateMargin_();
+    // Window transitions and the breaker's XUNI-pressure flag must track reality on every
+    // step — including while the breaker is OPEN, which is exactly when the flag decides
+    // whether the recovery probe is capped at 5 s for a live submission window.
+    updateXuniWindowAndPressure_();
     if (breaker_.state() == CircuitBreaker::State::Open) {
         // OPEN: probes only — no /verify traffic and no confirmation lookups either
         // (they target the same host; hammering /get_block during an outage helps nobody).
@@ -594,6 +598,33 @@ SubmissionManager::StepResult SubmissionManager::runStep_() {
         return confirm_result;
     }
     return submit_result;
+}
+
+void SubmissionManager::updateXuniWindowAndPressure_() {
+    std::int64_t offset = 0;
+    {
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        offset = server_offset_ms_.value_or(0);
+    }
+    const XuniWindowState window = xuniWindowAt(wall_() + offset);
+    if (window.open && !last_window_open_) {
+        // A window just opened: parked XUNI with remaining budget become Pending again.
+        // This runs even while the breaker is OPEN so recovery finds them Pending — and
+        // so they register as pressure below.
+        journal_.unparkXuniForWindow(cfg_.xuni_max_windows);
+    }
+    last_window_open_ = window.open;
+
+    if (breaker_.state() == CircuitBreaker::State::Open) {
+        // submitStep_ never runs while OPEN, so its pressure update is unreachable; keep
+        // the flag live here with an existence check (LIMIT 1 — no full hydration, no
+        // O(n) counts()). This is what arms the 5 s probe cap for a live window and
+        // releases it once the window closes.
+        const bool pressure =
+            window.open &&
+            !journal_.fetchEligibleOfKind(FindKind::XUNI, isoUtc(wall_()), 1).empty();
+        breaker_.setXuniPressure(pressure);
+    }
 }
 
 SubmissionManager::StepResult SubmissionManager::probeStep_() {
@@ -630,12 +661,9 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         std::lock_guard<std::mutex> lk(state_mutex_);
         offset = server_offset_ms_.value_or(0);
     }
+    // Window transition (unpark) already happened in updateXuniWindowAndPressure_; here
+    // the window state only drives which kinds are fetched and the scheduler's priority.
     const XuniWindowState window = xuniWindowAt(wall_() + offset);
-    if (window.open && !last_window_open_) {
-        // A window just opened: parked XUNI with remaining budget become Pending again.
-        journal_.unparkXuniForWindow(cfg_.xuni_max_windows);
-    }
-    last_window_open_ = window.open;
 
     // Fetch per kind rather than taking one mixed oldest-first slice. A single LIMITed slice
     // lets either kind starve the other, and both directions are reachable in normal
