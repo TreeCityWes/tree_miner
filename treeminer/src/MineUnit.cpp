@@ -5,12 +5,14 @@
 #include "Logger.h"
 #include "MiningCommon.h"
 #include "MiningCoordinator.h"
+#include "GpuMemoryPlanner.h"
 #include "hashapi/HashApiTuning.h"
 using namespace std;
 
 int MineUnit::runMineLoop()
 {// run mine loop in fixed diff until it's break
 	int batchComputeCount = 0;
+	bool poolPendingConfirmation = globalCudaStreamsPerDevice > 1;
 	backend_.activate();
 	DeviceInfo devInfo = backend_.getDeviceInfo();
 	gpuName = devInfo.name;
@@ -19,18 +21,26 @@ int MineUnit::runMineLoop()
 	// A prior difficulty's pool can consume nearly all VRAM. Release it before sizing
 	// the next pool, or a difficulty increase can select a tiny batch from the scraps.
 	backend_.releaseBuffers();
-	size_t freeMemory = backend_.getFreeMemory();
+	hashapi::CudaBatchSizeDecision batchDecision;
 	if (globalCudaStreamsPerDevice > 1) {
-		constexpr size_t kDeviceHeadroom = 512ULL * 1024ULL * 1024ULL;
-		const size_t shareableMemory = totalMemory > kDeviceHeadroom
-			? totalMemory - kDeviceHeadroom
-			: totalMemory;
-		freeMemory = std::min(freeMemory, shareableMemory / globalCudaStreamsPerDevice);
+		// Fair-share sizing through the per-device planner. The old clamp derived the
+		// share from TOTAL device memory, so with external VRAM pressure the first
+		// stream took the whole free pool and its sibling starved permanently.
+		GpuMemoryPlanner::instance().releasePool(devInfo.index, streamIndex_);
+		GpuMemoryPlanner::instance().planPool(
+			devInfo.index, streamIndex_,
+			[this] { return backend_.getFreeMemory(); },
+			[this, &batchDecision](std::size_t share) {
+				batchDecision = hashapi::selectCudaBatchSize(
+					share, static_cast<std::uint32_t>(difficulty), globalMaxBatchSize);
+				return batchDecision.selected_batch_size * difficulty * 1024;
+			});
+	} else {
+		batchDecision = hashapi::selectCudaBatchSize(
+			backend_.getFreeMemory(),
+			static_cast<std::uint32_t>(difficulty),
+			globalMaxBatchSize);
 	}
-	auto batchDecision = hashapi::selectCudaBatchSize(
-		freeMemory,
-		static_cast<std::uint32_t>(difficulty),
-		globalMaxBatchSize);
 	if(batchDecision.selected_batch_size == 0) {
 		Logger::logToConsole("GPU memory allocation unavailable; retrying with backoff\n");
 		return 1;
@@ -89,6 +99,12 @@ int MineUnit::runMineLoop()
 			return 1;
 		}
 		submitMatches(extractedSalt, batchResult);
+		if (poolPendingConfirmation) {
+			// First successful batch: the pool is genuinely allocated now, so promote the
+			// planner reservation from pending to committed for sibling-share math.
+			GpuMemoryPlanner::instance().confirmPool(devInfo.index, streamIndex_);
+			poolPendingConfirmation = false;
+		}
 		stat();
 
 		batchComputeCount++;

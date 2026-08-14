@@ -214,6 +214,7 @@ set(SOURCE_FILES
     src/LocalServer.cpp
     src/BlockSubmitter.cpp
     src/AppConfig.cpp
+    src/GpuMemoryPlanner.cpp
     src/argon2params.cpp
     src/blake2b.cpp
     src/ConfigManager.cpp

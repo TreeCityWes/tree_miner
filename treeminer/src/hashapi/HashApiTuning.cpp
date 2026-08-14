@@ -109,4 +109,18 @@ CudaBatchSizeDecision selectCudaBatchSizeForDifficultySequence(
     return decision;
 }
 
+std::size_t computeStreamMemoryShare(const StreamShareInput& in)
+{
+    const std::size_t streams = in.active_streams == 0 ? 1 : in.active_streams;
+    const std::size_t pool_total = in.device_free_bytes + in.sibling_committed_bytes;
+    if (pool_total <= in.headroom_bytes) {
+        return 0;
+    }
+    const std::size_t fair = (pool_total - in.headroom_bytes) / streams;
+    const std::size_t immediate = in.device_free_bytes > in.sibling_pending_bytes
+                                      ? in.device_free_bytes - in.sibling_pending_bytes
+                                      : 0;
+    return std::min(fair, immediate);
+}
+
 } // namespace hashapi

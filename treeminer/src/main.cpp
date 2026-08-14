@@ -40,6 +40,7 @@
 #include "StatReporter.h"
 #include "TerminalUi.h"
 #include "LocalServer.h"
+#include "GpuMemoryPlanner.h"
 #include "BlockSubmitter.h"
 #include "hashapi/HashApiCli.h"
 #include "hashapi/HashApiSelfTest.h"
@@ -159,6 +160,11 @@ static void runMiningOnDevice(ComputeBackend& backend,
             // spinning the CPU and flooding the log. Back off before the next attempt.
             std::this_thread::sleep_for(std::chrono::seconds(5));
         }
+    }
+    if (globalCudaStreamsPerDevice > 1) {
+        // A retired stream stops counting toward sibling fair shares, and its memory is
+        // reclaimed at the survivors' next resize.
+        GpuMemoryPlanner::instance().retireStream(backend.getDeviceInfo().index, streamIndex);
     }
 }
 
@@ -1188,6 +1194,12 @@ int main(int argc, const char *const *argv)
         for (std::size_t streamIndex = 0; streamIndex < globalCudaStreamsPerDevice; ++streamIndex) {
             backends.push_back(std::make_unique<CudaBackend>(static_cast<int>(deviceIndex)));
             backendStreamIndexes.push_back(static_cast<int>(streamIndex));
+            if (globalCudaStreamsPerDevice > 1) {
+                // Register BEFORE the mining threads start so the first stream to size
+                // divides by the full sibling count, not by however many have raced in.
+                GpuMemoryPlanner::instance().declareStream(static_cast<int>(deviceIndex),
+                                                           static_cast<int>(streamIndex));
+            }
         }
     }
 
