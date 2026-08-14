@@ -21,3 +21,8 @@ std::string dashboardReadyMessage(const std::string& bind_address);
 void startServer(const std::string& bind_address);
 void setupRoutes(treeminer::IFindJournal* journal,
                  treeminer::SubmissionManager* submission_manager);
+// Nulls the backend pointers the route handlers read. Call only after the server has
+// been stopped and its thread joined; this is defense in depth for the file-static
+// crow app outliving main, NOT a substitute for the join. (Never re-call setupRoutes
+// for this — it would re-register every CROW_ROUTE.)
+void clearLocalServerBackends();

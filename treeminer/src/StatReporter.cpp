@@ -70,12 +70,16 @@ void uploadGpuInfos()
         }
         if (gpuInfos.size() == 0)
         {
-            std::this_thread::sleep_for(std::chrono::minutes(5));
+            if (!interruptibleShutdownSleep(std::chrono::minutes(5))) {
+                break;
+            }
             continue;
         }
         std::string infoJson = vectorToJson(
             machineId, miningIdentitySnapshot()->userAddress, gpuInfos).dump(-1);
-        std::this_thread::sleep_for(std::chrono::minutes(5));
+        if (!interruptibleShutdownSleep(std::chrono::minutes(5))) {
+            break;
+        }
     }
 }
 
@@ -321,7 +325,9 @@ void UploadDataPeriodically(int uploadPeriod) {
     long timeout = 3000;
     int failureCount = 0;
     int originalUploadPeriod = uploadPeriod;
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    if (!interruptibleShutdownSleep(std::chrono::seconds(10))) {
+        return;
+    }
 
     while (running) {
         auto data = getStatData();
@@ -338,6 +344,8 @@ void UploadDataPeriodically(int uploadPeriod) {
                 uploadPeriod = 600;
             }
         }
-        std::this_thread::sleep_for(std::chrono::seconds(uploadPeriod));
+        if (!interruptibleShutdownSleep(std::chrono::seconds(uploadPeriod))) {
+            break;
+        }
     }
 }

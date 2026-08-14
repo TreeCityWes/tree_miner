@@ -822,6 +822,11 @@ int main(int argc, const char *const *argv)
         submissionManager->start();
     }
 
+    // Long-lived poller/server threads stay JOINABLE: they hold references to the
+    // journal and submission manager, so main must join them before those objects are
+    // destroyed at end of scope (their sleeps are interruptibleShutdownSleep).
+    std::thread difficultyThread;
+    std::thread uploadStatThread;
     if (!isTestFixedDiff) {
         // Seed from the local cache so a restart during a server outage mines at the
         // last known real difficulty instead of the 42069 fallback (~50x wasted work).
@@ -835,14 +840,12 @@ int main(int argc, const char *const *argv)
             globalDifficulty = 42069;
         }
         updateDifficulty();
-        std::thread difficultyThread(updateDifficultyPeriodically);
-        difficultyThread.detach();
+        difficultyThread = std::thread(updateDifficultyPeriodically);
     } else {
         std::cout << "Running in TEST MODE with fixed difficulty " << globalDifficulty << std::endl;
     }
 
     std::thread uploadThread(uploadGpuInfos);
-    uploadThread.detach();
 
     SubmitCallback submitCallback = [&logger, &findJournal, &submissionManager, &fallbackSink](const std::string &hexsalt, const std::string &key, const std::string &hashed_pure, const std::uint32_t memory_cost, const size_t attempts, const float hashrate, const std::string &source) {
 
@@ -1237,16 +1240,20 @@ int main(int argc, const char *const *argv)
         std::ofstream urlFile("dashboard.url", std::ios::trunc);
         urlFile << ready;
     }
-    serverThread.detach();
     if(!donotupload){
-        std::thread uploadStatThread(UploadDataPeriodically, 60);
-        uploadStatThread.detach();
+        uploadStatThread = std::thread(UploadDataPeriodically, 60);
     }
 
     while (running)
     {
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
+
+    // Deterministic teardown: every thread that references the journal, the submission
+    // manager, or the global stat providers is stopped and JOINED before those objects
+    // are destroyed at end of scope. Order matters — see each step's comment.
+    notifyShutdownSleepers();  // wake the poller sleeps (normal thread context, not the
+                               // signal handler; worst-case join is the HTTP timeouts)
 
     if (cpuMiningWorker) {
         cpuMiningWorker->stop();
@@ -1258,6 +1265,38 @@ int main(int argc, const char *const *argv)
             miningThread.join();
         }
     }
+    // Mining threads joined: the status-line statCallback path no longer invokes
+    // globalSubmissionLineStatsProvider.
+
+    // Web server: crow's run() returns only after every handler worker has exited, so
+    // stop() + join IS the lifetime guard for s_journal / s_submission_manager.
+    // wait_for_server_start() (bounded) closes the race where stop() precedes the
+    // server's construction and would otherwise be a lost no-op, hanging the join.
+    getApp().wait_for_server_start();
+    getApp().stop();  // idempotent with the SIGINT handler's stop()
+    if (serverThread.joinable()) {
+        serverThread.join();
+    }
+    clearLocalServerBackends();  // defense in depth: s_app is a file-scope static that
+                                 // outlives main; a late request must see nullptr
+
+    // Pollers joined: after this, nothing invokes globalDifficultyObserver or the
+    // stat providers from a background thread.
+    if (difficultyThread.joinable()) {
+        difficultyThread.join();
+    }
+    if (uploadThread.joinable()) {
+        uploadThread.join();
+    }
+    if (uploadStatThread.joinable()) {
+        uploadStatThread.join();
+    }
+
+    // Every consumer is joined; drop the by-reference captures of the journal and the
+    // submission manager before their unique_ptrs are destroyed at end of scope.
+    globalDifficultyObserver = nullptr;
+    globalTreeminerStatsProvider = nullptr;
+    globalSubmissionLineStatsProvider = nullptr;
 
     if (terminalUi) {
         Logger::clearConsoleSink();
@@ -1274,10 +1313,8 @@ int main(int argc, const char *const *argv)
         // NOR the fallback sink (review finding 6). Exit NONZERO so a supervisor
         // (systemd Restart=always) brings the miner back up against a possibly-recovered
         // disk instead of leaving a "running" process that destroys every find it makes.
-        // On the Ctrl-C path the signal handler already stops the web server; no signal
-        // fired here, so stop it before returning or the detached crow thread would race
-        // static destruction.
-        getApp().stop();
+        // The web server was already stopped and joined in the teardown above; nothing
+        // races static destruction on this path anymore.
         std::cerr << RED << "FATAL: durability failure — " << fatalDurabilityFailureReason()
                   << " — exiting nonzero for supervisor restart" << RESET << std::endl;
         return 2;

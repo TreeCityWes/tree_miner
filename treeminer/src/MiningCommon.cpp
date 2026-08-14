@@ -1,5 +1,6 @@
 #include "MiningCommon.h"
 
+#include <condition_variable>
 #include <cstdint>
 #include <ctime>
 #include <memory>
@@ -36,6 +37,26 @@ namespace {
 std::mutex fatalDurabilityReasonMutex;
 std::string fatalDurabilityReason;
 } // namespace
+
+namespace {
+std::mutex shutdownSleepMutex;
+std::condition_variable shutdownSleepCv;
+} // namespace
+
+bool interruptibleShutdownSleep(std::chrono::milliseconds duration)
+{
+    std::unique_lock<std::mutex> lock(shutdownSleepMutex);
+    shutdownSleepCv.wait_for(lock, duration, [] { return !running.load(); });
+    return running.load();
+}
+
+void notifyShutdownSleepers()
+{
+    // Lock/unlock pairs with the sleeper's predicate check so a wake between the
+    // predicate evaluation and the wait cannot be lost.
+    { std::lock_guard<std::mutex> lock(shutdownSleepMutex); }
+    shutdownSleepCv.notify_all();
+}
 
 void declareFatalDurabilityFailure(const std::string& reason)
 {

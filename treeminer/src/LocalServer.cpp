@@ -271,6 +271,11 @@ void startServer(const std::string& bind_address) {
     s_app.bindaddr(bind_address).port(globalDashboardPort).multithreaded().run();
 }
 
+void clearLocalServerBackends() {
+    s_journal = nullptr;
+    s_submission_manager = nullptr;
+}
+
 void setupRoutes(treeminer::IFindJournal* journal,
                  treeminer::SubmissionManager* submission_manager) {
     s_journal = journal;

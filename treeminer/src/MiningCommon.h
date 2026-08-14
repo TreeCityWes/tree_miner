@@ -73,6 +73,15 @@ extern std::mutex mtx;
 extern std::atomic<bool> running;
 extern std::mutex coutmtx;
 
+// Interruptible shutdown sleep for the long-lived poller threads (difficulty poller,
+// stat/gpu-info uploaders). Waits up to `duration`, returning early as soon as shutdown
+// is requested; returns true iff the full duration elapsed with `running` still set.
+// Callers must remain joinable: main() wakes every sleeper via notifyShutdownSleepers()
+// (from normal thread context, never the signal handler) and joins them before the
+// journal and submission manager are destroyed.
+bool interruptibleShutdownSleep(std::chrono::milliseconds duration);
+void notifyShutdownSleepers();
+
 // --- Fatal durability state (security review finding 6) ---
 // Raised when a find could be persisted by NEITHER the SQLite journal NOR the fallback
 // sink. From that moment every future find would be destroyed on arrival, so continuing
