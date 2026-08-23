@@ -7,7 +7,7 @@
 #include <thread>
 #include <algorithm>
 #include <set>
-#include <nvml.h>
+#include "gpu/GpuTelemetry.h"
 #include "HttpClient.h"
 #include "LocalServer.h"
 
@@ -251,12 +251,10 @@ nlohmann::json getStatData() {
 
     auto now = std::chrono::system_clock::now();
     auto uptime = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
-    nvmlReturn_t nvmlResult;
-    nvmlDevice_t nvmlDevice;
-    nvmlUtilization_t nvmlUtilization;
-    nvmlMemory_t nvmlMemory;
-    unsigned int totalPower;
-    nvmlResult = nvmlInit();
+    // Power/utilization come from the vendor management library (NVML on NVIDIA,
+    // ROCm SMI on AMD). Absent or unsupported, the fields report as unavailable.
+    const gputelemetry::TelemetrySession telemetry;
+    unsigned int totalPower = 0;
     for (const auto& gpuInfoPair : globalGpuInfos) {
         const auto& gpuInfo = gpuInfoPair.second.first;
         nlohmann::json gpuJson;
@@ -266,17 +264,14 @@ nlohmann::json getStatData() {
         stream_hashRate << std::fixed << std::setprecision(2) << gpuInfo.hashrate;
         gpuJson["hashrate"] = stream_hashRate.str();
         gpuJson["memory"] = gpuInfo.memory;
-        unsigned int power = -1;
-        if(nvmlResult == NVML_SUCCESS) {
-            nvmlReturn_t nvmlResult_ = nvmlDeviceGetHandleByIndex(gpuInfo.index, &nvmlDevice);
-            if (nvmlResult_ == NVML_SUCCESS) {
-                nvmlResult_ = nvmlDeviceGetPowerUsage(nvmlDevice, &power);
-                nvmlResult_ = nvmlDeviceGetUtilizationRates(nvmlDevice, &nvmlUtilization);
-            }
-        }
+        const gputelemetry::DeviceTelemetry deviceTelemetry =
+            telemetry.query(gpuInfo.index, gpuInfo.busId);
+        const unsigned int power = deviceTelemetry.hasPower
+            ? deviceTelemetry.powerMilliwatts
+            : static_cast<unsigned int>(-1);
         gpuJson["power"] = power;
-        totalPower += power == -1 ? 0 : power;
-        gpuJson["utiliz"] = nvmlUtilization.gpu;
+        totalPower += deviceTelemetry.hasPower ? deviceTelemetry.powerMilliwatts : 0;
+        gpuJson["utiliz"] = deviceTelemetry.utilizationPercent;
         std::ostringstream stream_usingMemory;
         stream_usingMemory << std::fixed << std::setprecision(1) << gpuInfo.usingMemory * 100;
         gpuJson["usingMemory"] = stream_usingMemory.str();
@@ -285,10 +280,6 @@ nlohmann::json getStatData() {
         totalHashCount += gpuInfo.hashCount;
         gpuArray.push_back(gpuJson);
     }
-    if(nvmlResult == NVML_SUCCESS) {
-        nvmlShutdown();
-    }
-
     result["machineId"] = machineId;
     result["minerAddr"] = miningIdentitySnapshot()->userAddress;
     std::ostringstream stream_totalHashrate;

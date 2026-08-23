@@ -48,9 +48,10 @@ XUNI blocks accepted and `/get_block`-confirmed on day one).
 
 ## Building (Linux / WSL2)
 
-Requires CUDA toolkit (12.x), CMake ≥ 3.18, Ninja, and [vcpkg](https://github.com/microsoft/vcpkg)
-(dependencies are declared in `treeminer/vcpkg.json`; a repo-local overlay port enables the
-secp256k1 recovery module).
+Requires CMake ≥ 3.18, Ninja, [vcpkg](https://github.com/microsoft/vcpkg) (dependencies are
+declared in `treeminer/vcpkg.json`; a repo-local overlay port enables the secp256k1 recovery
+module), and a GPU toolchain: **CUDA toolkit 12.x for NVIDIA** (default) or **ROCm with HIP
+for AMD** (CMake ≥ 3.21).
 
 ```sh
 cmake -S treeminer -B build -G Ninja \
@@ -60,8 +61,13 @@ ctest --test-dir build          # 15 suites
 ./build/bin/xenblocksMiner --execute --minerAddr 0xYourAddress --totalDevFee 0
 ```
 
+For AMD cards, add `-DTREEMINER_GPU_BACKEND=HIP` to the configure line. Both vendors share
+one kernel source; see `treeminer/doc/BUILD_INSTRUCTIONS.md` for the gfx targets, the
+ROCm SMI telemetry dependency, and what differs from the NVIDIA build.
+
 ## License
 
-MIT (`treeminer/LICENSE`), preserving woodysoil/XenblocksMiner attribution. The reference
+MIT (`LICENSE`, mirrored at `treeminer/LICENSE`), preserving woodysoil/XenblocksMiner
+attribution. The reference
 server repo (jacklevin74/xenminer) is unlicensed: it was read for protocol semantics only
 and **no code from it is included**.

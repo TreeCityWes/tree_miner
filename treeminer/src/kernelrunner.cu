@@ -1,5 +1,5 @@
 /* For IDE: */
-#ifndef __CUDACC__
+#if !defined(__CUDACC__) && !defined(__HIP__) && !defined(TREEMINER_GPU_HIP)
 #define __CUDACC__
 #endif
 
@@ -31,6 +31,21 @@
 #define THREADS_PER_LANE 32
 #define QWORDS_PER_THREAD (ARGON2_QWORDS_IN_BLOCK / 32)
 
+// Argon2 lanes are 32 threads wide on every backend. On NVIDIA that is exactly the warp,
+// so the implicit full-warp width is correct. On AMD, gfx9/CDNA wavefronts are 64 lanes
+// and HIP's shuffles default to warpSize — an absolute-index __shfl would then read a lane
+// from the wrong half of the wavefront. Pin every shuffle to THREADS_PER_LANE explicitly.
+#if defined(TREEMINER_GPU_HIP)
+#define TM_SHFL(value, src_lane)  __shfl((value), (src_lane), THREADS_PER_LANE)
+#define TM_SHFL_XOR(value, mask)  __shfl_xor((value), (mask), THREADS_PER_LANE)
+#elif CUDART_VERSION < 9000
+#define TM_SHFL(value, src_lane)  __shfl((value), (src_lane))
+#define TM_SHFL_XOR(value, mask)  __shfl_xor((value), (mask))
+#else
+#define TM_SHFL(value, src_lane)  __shfl_sync(0xFFFFFFFFu, (value), (src_lane))
+#define TM_SHFL_XOR(value, mask)  __shfl_xor_sync(0xFFFFFFFFu, (value), (mask))
+#endif
+
 using namespace std;
 
 __device__ __forceinline__ uint64_t u64_build(uint32_t hi, uint32_t lo)
@@ -50,8 +65,8 @@ __device__ __forceinline__ uint32_t u64_hi(uint64_t x)
 
 __device__ __forceinline__ uint64_t u64_shuffle(uint64_t v, uint32_t thread_src)
 {
-    uint32_t lo = __shfl_sync(0xFFFFFFFF, (uint32_t)v, thread_src);
-    uint32_t hi = __shfl_sync(0xFFFFFFFF, (uint32_t)(v >> 32), thread_src);
+    uint32_t lo = TM_SHFL((uint32_t)v, thread_src);
+    uint32_t hi = TM_SHFL((uint32_t)(v >> 32), thread_src);
     return ((uint64_t)hi << 32) | lo;
 }
 
@@ -491,6 +506,15 @@ __device__ void g1(struct block_th *block)
     block->c = c;
     block->d = d;
 }
+#if defined(TREEMINER_GPU_HIP)
+// The PTX below is NVIDIA-only. g1() is the same Argon2 G function written in plain C++;
+// on AMD, clang's own scheduling of that form is what the PTX hand-schedules for nvcc.
+__device__ __forceinline__
+void g(block_th* block)
+{
+    g1(block);
+}
+#else
 __device__
 void g(block_th* block)
 {
@@ -555,6 +579,7 @@ void g(block_th* block)
         : "+l"(block->a), "+l"(block->b), "+l"(block->c), "+l"(block->d)
     );
 }
+#endif
 
 
 __device__ void transpose1(struct block_th *block, uint32_t thread)
@@ -582,15 +607,9 @@ __device__ void transpose(
     uint64_t x2 = (g2 ? (g1 ? block->b : block->a) : (g1 ? block->d : block->c));
     uint64_t x3 = (g2 ? (g1 ? block->a : block->b) : (g1 ? block->c : block->d));
 
-#if CUDART_VERSION < 9000
-    x1 = __shfl_xor(x1, 0x4);
-    x2 = __shfl_xor(x2, 0x8);
-    x3 = __shfl_xor(x3, 0xC);
-#else
-    x1 = __shfl_xor_sync(0xFFFFFFFF, x1, 0x4);
-    x2 = __shfl_xor_sync(0xFFFFFFFF, x2, 0x8);
-    x3 = __shfl_xor_sync(0xFFFFFFFF, x3, 0xC);
-#endif
+    x1 = TM_SHFL_XOR(x1, 0x4);
+    x2 = TM_SHFL_XOR(x2, 0x8);
+    x3 = TM_SHFL_XOR(x3, 0xC);
 
     block->a = (g2 ? (g1 ? x3 : x2) : (g1 ? x1 : block->a));
     block->b = (g2 ? (g1 ? x2 : x3) : (g1 ? block->b : x1));
@@ -607,15 +626,9 @@ void shift1_shuffle(
     const uint32_t src_thr_b = (thread & 0x1c) | ((thread + 1) & 0x3);
     const uint32_t src_thr_d = (thread & 0x1c) | ((thread + 3) & 0x3);
 
-#if CUDART_VERSION < 9000
-    block->b = __shfl(block->b, src_thr_b);
-    block->c = __shfl_xor(block->c, 0x2);
-    block->d = __shfl(block->d, src_thr_d);
-#else
-    block->b = __shfl_sync(0xFFFFFFFF, block->b, src_thr_b);
-    block->c = __shfl_xor_sync(0xFFFFFFFF, block->c, 0x2);
-    block->d = __shfl_sync(0xFFFFFFFF, block->d, src_thr_d);
-#endif
+    block->b = TM_SHFL(block->b, src_thr_b);
+    block->c = TM_SHFL_XOR(block->c, 0x2);
+    block->d = TM_SHFL(block->d, src_thr_d);
 }
 
 __device__
@@ -626,15 +639,9 @@ void unshift1_shuffle(
     const uint32_t src_thr_b = (thread & 0x1c) | ((thread + 3) & 0x3);
     const uint32_t src_thr_d = (thread & 0x1c) | ((thread + 1) & 0x3);
 
-#if CUDART_VERSION < 9000
-    block->b = __shfl(block->b, src_thr_b);
-    block->c = __shfl_xor(block->c, 0x2);
-    block->d = __shfl(block->d, src_thr_d);
-#else
-    block->b = __shfl_sync(0xFFFFFFFF, block->b, src_thr_b);
-    block->c = __shfl_xor_sync(0xFFFFFFFF, block->c, 0x2);
-    block->d = __shfl_sync(0xFFFFFFFF, block->d, src_thr_d);
-#endif
+    block->b = TM_SHFL(block->b, src_thr_b);
+    block->c = TM_SHFL_XOR(block->c, 0x2);
+    block->d = TM_SHFL(block->d, src_thr_d);
 }
 
 __device__
@@ -646,15 +653,9 @@ void shift2_shuffle(
     const uint32_t src_thr_b = (((lo + 1) & 0x2) << 3) | (thread & 0xe) | ((lo + 1) & 0x1);
     const uint32_t src_thr_d = (((lo + 3) & 0x2) << 3) | (thread & 0xe) | ((lo + 3) & 0x1);
 
-#if CUDART_VERSION < 9000
-    block->b = __shfl(block->b, src_thr_b);
-    block->c = __shfl_xor(block->c, 0x10);
-    block->d = __shfl(block->d, src_thr_d);
-#else
-    block->b = __shfl_sync(0xFFFFFFFF, block->b, src_thr_b);
-    block->c = __shfl_xor_sync(0xFFFFFFFF, block->c, 0x10);
-    block->d = __shfl_sync(0xFFFFFFFF, block->d, src_thr_d);
-#endif
+    block->b = TM_SHFL(block->b, src_thr_b);
+    block->c = TM_SHFL_XOR(block->c, 0x10);
+    block->d = TM_SHFL(block->d, src_thr_d);
 }
 
 __device__
@@ -666,15 +667,9 @@ void unshift2_shuffle(
     const uint32_t src_thr_b = (((lo + 3) & 0x2) << 3) | (thread & 0xe) | ((lo + 3) & 0x1);
     const uint32_t src_thr_d = (((lo + 1) & 0x2) << 3) | (thread & 0xe) | ((lo + 1) & 0x1);
 
-#if CUDART_VERSION < 9000
-    block->b = __shfl(block->b, src_thr_b);
-    block->c = __shfl_xor(block->c, 0x10);
-    block->d = __shfl(block->d, src_thr_d);
-#else
-    block->b = __shfl_sync(0xFFFFFFFF, block->b, src_thr_b);
-    block->c = __shfl_xor_sync(0xFFFFFFFF, block->c, 0x10);
-    block->d = __shfl_sync(0xFFFFFFFF, block->d, src_thr_d);
-#endif
+    block->b = TM_SHFL(block->b, src_thr_b);
+    block->c = TM_SHFL_XOR(block->c, 0x10);
+    block->d = TM_SHFL(block->d, src_thr_d);
 }
 
 __device__ void shuffle_block(
@@ -812,7 +807,7 @@ __global__ void argon2_kernel_oneshot(
         struct block_g * __restrict__ memory,
         uint32_t segment_blocks)
 {
-    extern __shared__ struct block_l shared;
+    extern __shared__ struct block_l shared[];
 
     uint32_t job_id = blockIdx.x;
     uint32_t thread = threadIdx.x;
@@ -822,7 +817,7 @@ __global__ void argon2_kernel_oneshot(
     memory += (size_t)job_id * lane_blocks;
 
     struct block_th prev, addr;
-    struct block_l* tmp = &shared;
+    struct block_l* tmp = &shared[0];
     uint32_t thread_input;
 
     thread_input = (thread == 3) * lane_blocks + (thread == 4) + (thread == 5) * 2 + (thread == 6);

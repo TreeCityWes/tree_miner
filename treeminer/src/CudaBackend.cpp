@@ -1,6 +1,6 @@
 #include "CudaBackend.h"
 #include "CudaException.h"
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 #include <cmath>
 
 CudaBackend::CudaBackend(int deviceIndex)

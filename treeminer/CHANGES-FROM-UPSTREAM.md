@@ -4,7 +4,9 @@ TreeMiner is a fork of woodysoil/XenblocksMiner (MIT, declared in upstream READM
 Protocol knowledge additionally derives from reading jacklevin74/xenminer (unlicensed — **no code
 copied from it, ever**) and ops lessons from JozefJarosciak/xgpu (no code copied).
 
-Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry **zero diffs**.
+Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry **zero diffs**
+on the NVIDIA path — the AMD/ROCm backend adds compile-time branches only, so every
+NVIDIA build still preprocesses to the upstream kernel (see the ROCm entry below).
 
 ## Change log
 
@@ -134,4 +136,22 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   unattended-upgrades blacklist (`51-treeminer-no-auto-driver`) so NVIDIA driver/kernel
   updates are deliberate operator actions — an automatic 2 AM driver swap mid-mining
   (2026-08-11) preceded the reset storm and the NVML mismatch that broke `nvidia-smi`.
+- **AMD ROCm backend** (`src/gpu/GpuRuntime.h`, `src/gpu/GpuTelemetry.*`, `CMakeLists.txt`,
+  `CMakePresets.json`, `kernelrunner.cu`, `StatReporter.cpp`, `HashApiTypes.h`,
+  `main.cpp`): the miner now builds for AMD cards through HIP, selected with
+  `-DTREEMINER_GPU_BACKEND=HIP`. NVIDIA remains the default and its build is unchanged —
+  `GpuRuntime.h` maps the ~25 CUDA runtime calls onto their HIP equivalents only when
+  `TREEMINER_GPU_HIP` is defined, and every kernel-level difference is behind the same
+  guard. Three real differences: (1) an Argon2 lane is 32 threads but gfx9/CDNA wavefronts
+  are 64, so shuffles are pinned to an explicit 32-lane width (`TM_SHFL`/`TM_SHFL_XOR`)
+  instead of relying on the implicit warp width; (2) the hand-written PTX `g()` cannot be
+  assembled by the AMD compiler, so ROCm uses the existing C++ `g1()` form; (3) power and
+  utilization come from ROCm SMI rather than NVML, behind a vendor-neutral
+  `gputelemetry::TelemetrySession` (optional — a missing ROCm SMI only disables those
+  gauges). `kGpuFirstBlocksEnabled` stays `false` on ROCm until the first-blocks kernel is
+  confirmed against the CPU reference on real AMD hardware; the startup CPU/GPU self-test
+  probes it and reports the result either way, and still refuses to mine on mismatch.
+  gfx targets are auto-detected via `amdgpu-arch`/`rocminfo` with a fat-binary fallback.
+  Verified: kernel compiles clean for gfx906/gfx90a/gfx942/gfx1030/gfx1100 (ROCm 7.2);
+  runtime validation on AMD hardware still pending.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

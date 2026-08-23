@@ -11,7 +11,7 @@
 #include <map>
 #include <sstream>
 #include <set>
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 #include <boost/program_options.hpp>
 #include "EthereumAddressValidator.h"
 #include "MiningCommon.h"
@@ -568,7 +568,9 @@ int main(int argc, const char *const *argv)
     cudaError_t cudaStatus = cudaGetDeviceCount(&deviceCount);
     if (cudaStatus != cudaSuccess)
     {
-        std::cerr << "cudaGetDeviceCount failed! Do you have a CUDA-capable GPU installed?" << std::endl;
+        std::cerr << "GPU device enumeration failed (" << cudaGetErrorString(cudaStatus)
+                  << ")! Do you have a " TREEMINER_GPU_BACKEND_NAME "-capable GPU and driver installed?"
+                  << std::endl;
         return -1;
     }
 
@@ -601,12 +603,13 @@ int main(int argc, const char *const *argv)
                     hashapi::kGpuFirstBlocksEnabled);
                 if (!selfTest.ok) {
                     std::cerr << "WARN: GPU #" << deviceIndex
-                              << " failed startup Argon2 CPU/CUDA self-test: " << selfTest.error
+                              << " failed startup Argon2 CPU/" TREEMINER_GPU_BACKEND_NAME
+                                 " self-test: " << selfTest.error
                               << " — skipping this device." << std::endl;
                     continue;
                 }
                 std::cout << "GPU #" << deviceIndex
-                          << " Argon2 CPU/CUDA self-test passed." << std::endl;
+                          << " Argon2 CPU/" TREEMINER_GPU_BACKEND_NAME " self-test passed." << std::endl;
                 if (!hashapi::kGpuFirstBlocksEnabled) {
                     const hashapi::HashApiSelfTestResult firstBlocks =
                         hashapi::runCpuCudaSelfTest(cpuReference, cudaCandidate, deviceIndex, true);
@@ -629,13 +632,13 @@ int main(int argc, const char *const *argv)
             }
         }
         if (miningDevices.empty()) {
-            std::cerr << "FATAL: no GPU passed the startup Argon2 CPU/CUDA self-test. "
+            std::cerr << "FATAL: no GPU passed the startup Argon2 CPU/" TREEMINER_GPU_BACKEND_NAME " self-test. "
                       << "Mining was not started." << std::endl;
             return EXIT_FAILURE;
         }
         usedDevices.swap(miningDevices);
     } catch (const std::exception& e) {
-        std::cerr << "FATAL: startup Argon2 CPU/CUDA self-test could not run: "
+        std::cerr << "FATAL: startup Argon2 CPU/" TREEMINER_GPU_BACKEND_NAME " self-test could not run: "
                   << e.what() << ". Mining was not started." << std::endl;
         return EXIT_FAILURE;
     }

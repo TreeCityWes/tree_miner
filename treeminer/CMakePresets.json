@@ -35,6 +35,31 @@
             }
         },
         {
+            "name": "rocm-release-linux-fat",
+            "displayName": "ROCm Release fat binary (Linux)",
+            "description": "AMD build via HIP. Fat binary covering GCN/CDNA (gfx900..gfx942) and RDNA (gfx1010..gfx1201).",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-rocm-linux-fat",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "XENBLOCKS_BUILD_MINER": "ON",
+                "TREEMINER_GPU_BACKEND": "HIP",
+                "CMAKE_HIP_ARCHITECTURES": "gfx900;gfx906;gfx908;gfx90a;gfx942;gfx1010;gfx1030;gfx1031;gfx1100;gfx1101;gfx1102;gfx1200;gfx1201"
+            }
+        },
+        {
+            "name": "rocm-release-linux-native",
+            "displayName": "ROCm Release for the local GPU",
+            "description": "AMD build via HIP; the gfx target is detected from the installed ROCm tools at configure time.",
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-rocm-linux",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "XENBLOCKS_BUILD_MINER": "ON",
+                "TREEMINER_GPU_BACKEND": "HIP"
+            }
+        },
+        {
             "name": "cuda-release-vcpkg-sm75",
             "displayName": "CUDA Release for sm_75",
             "description": "Release full-miner build for Turing-class CUDA GPUs.",
@@ -118,6 +143,14 @@
         {
             "name": "cuda-release-vcpkg-modern",
             "configurePreset": "cuda-release-vcpkg-modern"
+        },
+        {
+            "name": "rocm-release-linux-fat",
+            "configurePreset": "rocm-release-linux-fat"
+        },
+        {
+            "name": "rocm-release-linux-native",
+            "configurePreset": "rocm-release-linux-native"
         },
         {
             "name": "cuda-release-vcpkg-sm75",

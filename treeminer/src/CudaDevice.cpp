@@ -1,6 +1,6 @@
 #include "CudaDevice.h"
 #include <stdexcept>
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 #include <sstream>
 #include <cmath>
 

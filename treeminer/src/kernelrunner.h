@@ -1,5 +1,5 @@
 #pragma once
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 #include <cstdint>
 #include <memory>
 #include <string>
