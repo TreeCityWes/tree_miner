@@ -18,7 +18,7 @@
         commonDeps = with pkgs; [
           libargon2
           cryptopp
-          cpr
+          libcpr
           nlohmann_json
           openssl
           boost
@@ -77,6 +77,8 @@
             mkdir -p $out/bin
             cp bin/xenblocksMiner $out/bin/
           '';
+          # `nix run` needs the binary name, which differs from pname.
+          meta.mainProgram = "xenblocksMiner";
         };
 
         packages.default = self.packages.${system}.treeminer-rocm;
