@@ -610,9 +610,16 @@ int main(int argc, const char *const *argv)
                 }
                 std::cout << "GPU #" << deviceIndex
                           << " Argon2 CPU/" TREEMINER_GPU_BACKEND_NAME " self-test passed." << std::endl;
-                if (!hashapi::kGpuFirstBlocksEnabled) {
+                if (hashapi::kGpuFirstBlocksEnabled) {
+                    // The self-test above already ran the GPU first-blocks path.
+                    setGpuFirstBlocksVerified(deviceIndex, true);
+                } else {
+                    // Default-off backends (ROCm) still probe: a device that matches the
+                    // CPU reference mines with GPU first blocks, one that does not keeps
+                    // them on the CPU rather than being dropped.
                     const hashapi::HashApiSelfTestResult firstBlocks =
                         hashapi::runCpuCudaSelfTest(cpuReference, cudaCandidate, deviceIndex, true);
+                    setGpuFirstBlocksVerified(deviceIndex, firstBlocks.ok);
                     if (!firstBlocks.ok) {
                         std::cout << "GPU #" << deviceIndex
                                   << " GPU-first-blocks probe still mismatches ("
@@ -620,8 +627,8 @@ int main(int argc, const char *const *argv)
                                   << "); mining stays on CPU first-blocks." << std::endl;
                     } else {
                         std::cout << "GPU #" << deviceIndex
-                                  << " GPU-first-blocks probe matched the CPU reference."
-                                  << std::endl;
+                                  << " GPU-first-blocks probe matched the CPU reference;"
+                                  << " enabling GPU first blocks for this device." << std::endl;
                     }
                 }
                 miningDevices.insert(deviceIndex);

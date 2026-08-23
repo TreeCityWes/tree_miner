@@ -27,7 +27,18 @@ endif()
 # Idempotent if src/journal already found it; needed here because the tests also open
 # the database directly (raw persistence checks) and imported targets are
 # directory-scoped.
-find_package(unofficial-sqlite3 CONFIG REQUIRED)
+# vcpkg (unofficial-sqlite3) or a system/nix SQLite via CMake's FindSQLite3.
+find_package(unofficial-sqlite3 CONFIG QUIET)
+if(unofficial-sqlite3_FOUND)
+    set(TREEMINER_SQLITE3_TARGET unofficial::sqlite3::sqlite3)
+else()
+    find_package(SQLite3 REQUIRED)
+    if(TARGET SQLite3::SQLite3)
+        set(TREEMINER_SQLITE3_TARGET SQLite3::SQLite3)
+    else()
+        set(TREEMINER_SQLITE3_TARGET SQLite::SQLite3)
+    endif()
+endif()
 
 # src/treeminer/Types.cpp is the single defining TU for treeminer::to_string (contract
 # v1.1, integration-lead-owned); each test binary compiles it in rather than defining
@@ -38,7 +49,7 @@ add_executable(treeminer_journal_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/treeminer/Types.cpp
 )
 target_link_libraries(treeminer_journal_tests
-    PRIVATE treeminer_journal unofficial::sqlite3::sqlite3)
+    PRIVATE treeminer_journal ${TREEMINER_SQLITE3_TARGET})
 
 # One CTest case per test function (the binary takes test names as arguments).
 set(TREEMINER_JOURNAL_TEST_CASES
@@ -74,7 +85,7 @@ add_executable(treeminer_fallback_sink_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../../../src/treeminer/Types.cpp
 )
 target_link_libraries(treeminer_fallback_sink_tests
-    PRIVATE treeminer_journal unofficial::sqlite3::sqlite3)
+    PRIVATE treeminer_journal ${TREEMINER_SQLITE3_TARGET})
 
 set(TREEMINER_FALLBACK_SINK_TEST_CASES
     append_and_import_round_trip

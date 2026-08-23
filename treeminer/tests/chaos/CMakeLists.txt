@@ -29,7 +29,18 @@ endif()
 
 # Imported targets are directory-scoped; the journal library links it too, but this
 # directory needs its own find_package for the transitive sqlite3 dependency.
-find_package(unofficial-sqlite3 CONFIG REQUIRED)
+# vcpkg (unofficial-sqlite3) or a system/nix SQLite via CMake's FindSQLite3.
+find_package(unofficial-sqlite3 CONFIG QUIET)
+if(unofficial-sqlite3_FOUND)
+    set(TREEMINER_SQLITE3_TARGET unofficial::sqlite3::sqlite3)
+else()
+    find_package(SQLite3 REQUIRED)
+    if(TARGET SQLite3::SQLite3)
+        set(TREEMINER_SQLITE3_TARGET SQLite3::SQLite3)
+    else()
+        set(TREEMINER_SQLITE3_TARGET SQLite::SQLite3)
+    endif()
+endif()
 
 # src/treeminer/Types.cpp is the single defining TU for treeminer::to_string (contract
 # v1.1); each test binary compiles it in rather than defining the symbols itself.
@@ -38,7 +49,7 @@ add_executable(treeminer_chaos_tests
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/treeminer/Types.cpp
 )
 target_link_libraries(treeminer_chaos_tests
-    PRIVATE treeminer_journal treeminer_submit unofficial::sqlite3::sqlite3)
+    PRIVATE treeminer_journal treeminer_submit ${TREEMINER_SQLITE3_TARGET})
 # Reuse the shared plain-assert framework from the submit unit tests.
 target_include_directories(treeminer_chaos_tests
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../unit/submit)

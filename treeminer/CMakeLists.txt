@@ -216,9 +216,14 @@ if(XENBLOCKS_BUILD_MINER)
         message(FATAL_ERROR "libcpr not found. Please install libcpr.")
     endif()
 
-    find_package(cryptopp CONFIG REQUIRED)
-    if (NOT cryptopp_FOUND)
-        message(FATAL_ERROR "Crypto++ library not found. Please install Crypto++.")
+    # vcpkg ships a cryptopp CMake config; most distro/nix packages only ship pkg-config.
+    find_package(cryptopp CONFIG QUIET)
+    if(cryptopp_FOUND)
+        set(XENBLOCKS_CRYPTOPP_TARGETS cryptopp::cryptopp)
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(CRYPTOPP REQUIRED IMPORTED_TARGET libcryptopp)
+        set(XENBLOCKS_CRYPTOPP_TARGETS PkgConfig::CRYPTOPP)
     endif()
 
     find_package(OpenSSL REQUIRED)
@@ -237,8 +242,17 @@ if(XENBLOCKS_BUILD_MINER)
     if(unofficial-secp256k1_FOUND)
         set(XENBLOCKS_SECP256K1_TARGETS unofficial::secp256k1 unofficial::secp256k1_precomputed)
     else()
-        find_package(libsecp256k1 CONFIG REQUIRED)
-        set(XENBLOCKS_SECP256K1_TARGETS libsecp256k1::secp256k1)
+        find_package(libsecp256k1 CONFIG QUIET)
+        if(libsecp256k1_FOUND)
+            set(XENBLOCKS_SECP256K1_TARGETS libsecp256k1::secp256k1)
+        else()
+            # Distro/nix builds expose it through pkg-config only. The recovery module
+            # (secp256k1_recovery.h) must be enabled in that build — it is what signs the
+            # miner's identity payloads.
+            find_package(PkgConfig REQUIRED)
+            pkg_check_modules(SECP256K1 REQUIRED IMPORTED_TARGET libsecp256k1)
+            set(XENBLOCKS_SECP256K1_TARGETS PkgConfig::SECP256K1)
+        endif()
     endif()
 
     find_package(Crow CONFIG REQUIRED)
@@ -273,7 +287,13 @@ endif()
 find_package(nlohmann_json CONFIG QUIET)
 
 if(XENBLOCKS_BUILD_MINER)
-    if(NOT unofficial-argon2_FOUND)
+    # vcpkg exports argon2 as unofficial-argon2; distro/nix installs expose it through
+    # pkg-config as libargon2 (found above). Either satisfies the miner.
+    if(unofficial-argon2_FOUND)
+        set(TREEMINER_ARGON2_TARGETS unofficial::argon2::libargon2)
+    elseif(ARGON2_FOUND)
+        set(TREEMINER_ARGON2_TARGETS ${ARGON2_LIBRARIES})
+    else()
         message(FATAL_ERROR "libargon2 not found. Please install argon2.")
     endif()
     if(NOT nlohmann_json_FOUND)
@@ -287,7 +307,7 @@ if(XENBLOCKS_BUILD_MINER)
     else()
         list(APPEND LINK_LIBRARIES CUDA::nvml)
     endif()
-    list(APPEND LINK_LIBRARIES unofficial::argon2::libargon2 cryptopp::cryptopp cpr::cpr nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto Boost::program_options ${XENBLOCKS_SECP256K1_TARGETS} Crow::Crow ${XENBLOCKS_PAHO_MQTT_CPP_TARGET})
+    list(APPEND LINK_LIBRARIES ${TREEMINER_ARGON2_TARGETS} ${XENBLOCKS_CRYPTOPP_TARGETS} cpr::cpr nlohmann_json::nlohmann_json OpenSSL::SSL OpenSSL::Crypto Boost::program_options ${XENBLOCKS_SECP256K1_TARGETS} Crow::Crow ${XENBLOCKS_PAHO_MQTT_CPP_TARGET})
 endif()
 
 # TreeMiner components: durable journal + submission stack (contract in src/treeminer/).
@@ -408,8 +428,15 @@ if(XENBLOCKS_BUILD_MINER)
         $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets>
     )
     target_compile_definitions(${PROJECT_NAME} PRIVATE XENBLOCKS_BUILD_MINER=1)
+    if(NOT unofficial-argon2_FOUND AND ARGON2_FOUND)
+        target_include_directories(${PROJECT_NAME} PRIVATE ${ARGON2_INCLUDE_DIRS})
+        target_link_directories(${PROJECT_NAME} PRIVATE ${ARGON2_LIBRARY_DIRS})
+    endif()
     if(TREEMINER_GPU_HIP)
-        target_link_libraries(${PROJECT_NAME} PRIVATE hip::device)
+        # Deliberately hip::host and not hip::device: the latter pushes --offload-arch onto
+        # every source in the target, including the C++ ones the host compiler builds.
+        # CMake's HIP language already emits the offload flags for the HIP source from
+        # CMAKE_HIP_ARCHITECTURES.
         # Defined for every language in the target so the shim, the kernel and the host
         # code all agree on which runtime they are compiled against.
         target_compile_definitions(${PROJECT_NAME} PRIVATE TREEMINER_GPU_HIP=1)

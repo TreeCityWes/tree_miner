@@ -152,6 +152,25 @@ NVIDIA build still preprocesses to the upstream kernel (see the ROCm entry below
   confirmed against the CPU reference on real AMD hardware; the startup CPU/GPU self-test
   probes it and reports the result either way, and still refuses to mine on mismatch.
   gfx targets are auto-detected via `amdgpu-arch`/`rocminfo` with a fat-binary fallback.
-  Verified: kernel compiles clean for gfx906/gfx90a/gfx942/gfx1030/gfx1100 (ROCm 7.2);
-  runtime validation on AMD hardware still pending.
+  Verified on an RX 7900 XTX (gfx1100, ROCm 7.2): startup CPU/GPU self-test passes on both
+  first-block paths, `hash-one` digests match the CPU reference byte for byte, 27/27 CTest
+  suites pass, and the miner sustains ~5.2 kH/s at difficulty 42069 / ~3.3 kH/s at 60000.
+  Kernel also compiles clean for gfx906/gfx90a/gfx942/gfx1030.
+- **GPU first-blocks decided per device, not per build** (`MiningCommon.*`, `MineUnit.cpp`,
+  `main.cpp`): `kGpuFirstBlocksEnabled` is now only the default. The startup self-test
+  already probed the GPU first-blocks path; it now records the verdict per device and
+  `MineUnit` reads it when building each batch. A device that matches the CPU reference
+  uses the fast path; one that does not keeps first blocks on the CPU rather than being
+  trusted on a build-time guess. NVIDIA behaviour is unchanged (the constant is `true`, the
+  self-test gates mining on it, a mismatching device is still skipped).
+- **ROCm VRAM headroom** (`hashapi/HashApiTuning.cpp`): ROCm satisfies an over-large device
+  allocation from host (GTT) memory instead of failing it, so the batch estimator's 100 MiB
+  cushion silently produced a pool that ran across PCIe — measured at difficulty 60000 on a
+  24 GiB gfx1100, batch 410 held 3.1 kH/s and batch 415 collapsed to 0.5 kH/s
+  (`--auto-batch-size` picked 415 and got 0.2 kH/s). The HIP path now reserves at least
+  1 GiB or 1/16th of free VRAM; auto-batch selects 391 and holds 3.3 kH/s. CUDA is unchanged.
+- **Buildable without vcpkg** (`flake.nix`, `CMakeLists.txt`, `src/journal/`, test CMake):
+  dependency lookups accept the upstream CMake config or pkg-config files alongside vcpkg's
+  `unofficial-*` exports (argon2, SQLite, Crypto++, secp256k1). `flake.nix` provides a ROCm
+  dev shell with the HIP toolchain and every library the miner links.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

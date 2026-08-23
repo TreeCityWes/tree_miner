@@ -117,9 +117,10 @@ hashapi::HashApiResult MineUnit::batchCompute(std::string salt, std::string keyP
 	// GPU first-blocks (device-side Blake2b prehash). Under nvcc 11.5 this path was
 	// miscompiled (wrong digests, server 401s — commit 12e241c); the CUDA 13 toolchain
 	// generates correct code, verified against the CPU reference on real hardware. The
-	// startup self-test in main exercises this same flag and refuses to mine on mismatch,
-	// so the toggle lives in one place (HashApiTypes.h) and can never silently diverge.
-	request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled;
+	// startup self-test probes this exact path on each device and records the verdict, so
+	// a device whose digests do not match the CPU reference mines with CPU first blocks
+	// instead of being trusted on a build-time guess.
+	request.gpu_first_blocks = gpuFirstBlocksVerified(request.device_id);
 	return hashBackend_.runBatch(request);
 }
 
