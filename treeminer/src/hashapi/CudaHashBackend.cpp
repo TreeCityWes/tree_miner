@@ -3,6 +3,7 @@
 #include "HashApiEncoding.h"
 #include "HashApiMatching.h"
 #include "HashApiValidation.h"
+#include "OneshotLaunch.h"
 #include "../ComputeBackend.h"
 #include "../RandomHexKeyGenerator.h"
 #include "../argon2-common.h"
@@ -297,6 +298,7 @@ HashApiResult CudaHashBackend::runBatch(const HashApiRequest& request)
     result.device_id = request.device_id;
     result.batch_size = request.batch_size;
     result.gpu_first_blocks = request.gpu_first_blocks;
+    result.warps_per_block = resolveWarpsPerBlock(request.warps_per_block);
 
     const auto validation_start = std::chrono::steady_clock::now();
     const auto errors = validateRequest(request);
@@ -462,6 +464,7 @@ HashApiResult CudaHashBackend::runBatch(const HashApiRequest& request)
         result.timings.input_ms = elapsedMillis(input_start, std::chrono::steady_clock::now());
 
         const auto compute_start = std::chrono::steady_clock::now();
+        compute_backend.setWarpsPerBlock(static_cast<std::uint32_t>(result.warps_per_block));
         compute_backend.run();
         result.timings.kernel_ms = static_cast<double>(compute_backend.finish());
         result.timings.host_to_device_ms = static_cast<double>(compute_backend.getLastHostToDeviceMs());

@@ -41,6 +41,7 @@ def test_hash_api_request_fields_exist():
         "first_block_dynamic_chunk_size",
         "first_block_dynamic_chunk_auto",
         "gpu_first_blocks",
+        "warps_per_block",
     ]:
         assert field in content
 
@@ -58,6 +59,8 @@ def test_hash_api_validation_rules_are_implemented():
         "batch_size must be greater than zero",
         "device_id must be non-negative",
         "gpu_first_blocks requires backend=cuda",
+        "warps_per_block > 1 requires backend=cuda",
+        "warps_per_block exceeds maximum of 16",
     ]:
         assert rule in content
 
@@ -270,6 +273,25 @@ def test_hash_api_exposes_gpu_first_block_experiment_flag():
     assert "getLastGpuFirstBlockMs" in runner
 
 
+def test_hash_api_exposes_warps_per_block_occupancy_experiment():
+    types = read("src/hashapi/HashApiTypes.h")
+    json_impl = read("src/hashapi/HashApiJson.cpp")
+    cli_impl = read("src/hashapi/HashApiCli.cpp")
+    compute = read("src/ComputeBackend.h")
+    cuda = read("src/hashapi/CudaHashBackend.cpp")
+    runner = read("src/kernelrunner.cu")
+    launch = read("src/hashapi/OneshotLaunch.h")
+
+    assert "std::size_t warps_per_block = 0" in types
+    assert "warps_per_block" in json_impl
+    assert "--warps-per-block" in cli_impl
+    assert "setWarpsPerBlock" in compute
+    assert "setWarpsPerBlock" in cuda
+    assert "warps_per_block" in runner
+    assert "kDefaultWarpsPerBlock = 1" in launch
+    assert "kMaxWarpsPerBlock = 16" in launch
+
+
 def test_hash_api_result_exposes_batch_size_range_metadata():
     types = read("src/hashapi/HashApiTypes.h")
     json_impl = read("src/hashapi/HashApiJson.cpp")
@@ -289,6 +311,20 @@ def test_hash_api_result_exposes_batch_size_range_metadata():
     assert "update_batch_size_ranges(current.batch_size)" in cli_impl
     assert "difficulty sequence and batch-size sequence lengths must match" in cli_impl
     assert "--batch-size-sequence" in docs
+
+
+def test_live_miner_warps_per_block_defaults_to_one_and_is_fail_closed():
+    main = read("src/main.cpp")
+    mine_unit = read("src/MineUnit.cpp")
+    common = read("src/MiningCommon.h")
+    launch = read("src/hashapi/OneshotLaunch.h")
+
+    assert '("warpsPerBlock", po::value<int>()' in main
+    assert "runWarpsPerBlockGolden" in main
+    assert "request.warps_per_block = globalWarpsPerBlock" in mine_unit
+    assert "extern std::size_t globalWarpsPerBlock" in common
+    assert "kDefaultWarpsPerBlock = 1" in launch
+    assert "kMaxWarpsPerBlock = 16" in launch
 
 
 def test_hash_api_base64_encoder_avoids_incremental_string_appends():

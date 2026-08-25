@@ -46,6 +46,8 @@
 #include "hashapi/HashApiSelfTest.h"
 #include "hashapi/CpuHashBackend.h"
 #include "hashapi/CudaHashBackend.h"
+#include "hashapi/OneshotLaunch.h"
+#include "hashapi/WarpsPerBlockGolden.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -254,6 +256,7 @@ int main(int argc, const char *const *argv)
             ("difficultyMarginMax", po::value<int>(), "auto mode only: ceiling on the headroom ramp in KiB (default 5000)")
             ("journalPath", po::value<std::string>(), "find journal database file (default: treeminer-journal.db in the working directory)")
             ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
+            ("warpsPerBlock", po::value<int>(), "hashes packed per CUDA block (1 default; 2-16 occupancy experiment, requires golden match)")
             ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
             ("cpuMaxDifficulty", po::value<int>(), "CPU workers hash only while difficulty <= this ceiling; they idle above it and resume when it falls (default 100; 0 = no ceiling)")
             ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 0.0.0.0 for Vast.ai/Docker/LAN; 127.0.0.1 for this machine only)")
@@ -417,6 +420,23 @@ int main(int argc, const char *const *argv)
             }
             globalCudaStreamsPerDevice = static_cast<std::size_t>(requestedStreams);
             std::cout << "CUDA streams per device: " << globalCudaStreamsPerDevice << std::endl;
+        }
+
+        if (vm.count("warpsPerBlock")) {
+            const int requestedWarps = vm["warpsPerBlock"].as<int>();
+            if (requestedWarps < 1 ||
+                requestedWarps > static_cast<int>(hashapi::kMaxWarpsPerBlock)) {
+                std::cerr << "The argument (" << requestedWarps
+                          << ") for warps per block must be 1-"
+                          << hashapi::kMaxWarpsPerBlock << "." << std::endl;
+                return -1;
+            }
+            globalWarpsPerBlock = static_cast<std::size_t>(requestedWarps);
+            std::cout << "CUDA warps per block: " << globalWarpsPerBlock;
+            if (globalWarpsPerBlock > 1) {
+                std::cout << " (occupancy experiment; live default is 1)";
+            }
+            std::cout << std::endl;
         }
 
         if (vm.count("cpuWorkers")) {
@@ -607,6 +627,22 @@ int main(int argc, const char *const *argv)
                 }
                 std::cout << "GPU #" << deviceIndex
                           << " Argon2 CPU/CUDA self-test passed." << std::endl;
+                if (globalWarpsPerBlock > 1) {
+                    const hashapi::WarpsGoldenResult warpsGolden = hashapi::runWarpsPerBlockGolden(
+                        deviceIndex,
+                        static_cast<std::uint32_t>(globalWarpsPerBlock));
+                    if (!warpsGolden.ok) {
+                        std::cerr << "WARN: GPU #" << deviceIndex
+                                  << " failed warps-per-block golden (warps="
+                                  << globalWarpsPerBlock << "): " << warpsGolden.error
+                                  << " — skipping this device." << std::endl;
+                        continue;
+                    }
+                    std::cout << "GPU #" << deviceIndex
+                              << " warps-per-block golden passed (warps="
+                              << warpsGolden.warps_per_block << ", jobs="
+                              << warpsGolden.jobs << ")." << std::endl;
+                }
                 if (!hashapi::kGpuFirstBlocksEnabled) {
                     const hashapi::HashApiSelfTestResult firstBlocks =
                         hashapi::runCpuCudaSelfTest(cpuReference, cudaCandidate, deviceIndex, true);

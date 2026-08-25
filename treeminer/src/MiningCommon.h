@@ -99,6 +99,7 @@ extern std::atomic<long> globalHashCount;
 extern std::string globalRpcLink;
 extern std::size_t globalMaxBatchSize;
 extern std::size_t globalCudaStreamsPerDevice;
+extern std::size_t globalWarpsPerBlock;
 
 enum class LastSubmissionState {
 	None,

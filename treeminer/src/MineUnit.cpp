@@ -120,6 +120,7 @@ hashapi::HashApiResult MineUnit::batchCompute(std::string salt, std::string keyP
 	// startup self-test in main exercises this same flag and refuses to mine on mismatch,
 	// so the toggle lives in one place (HashApiTypes.h) and can never silently diverge.
 	request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled;
+	request.warps_per_block = globalWarpsPerBlock;
 	return hashBackend_.runBatch(request);
 }
 

@@ -123,6 +123,16 @@ Function _Z21argon2_kernel_oneshotP7block_gj:
     assert parsed["kernels"][0]["kernel"] == "argon2_kernel_oneshot"
 
 
+def test_parse_resource_usage_maps_multi_warp_oneshot_mangled_name():
+    text = """
+arch = sm_86
+Function _Z21argon2_kernel_oneshotP7block_gjjj:
+  REG:40 STACK:0 SHARED:0 LOCAL:0 CONSTANT[0]:364 TEXTURE:0 SURFACE:0 SAMPLER:0
+"""
+    summary = resources.parse_resource_usage(text)
+    assert summary["kernels"][0]["kernel"] == "argon2_kernel_oneshot"
+
+
 def test_compare_resource_summaries_allows_equal_or_lower_resources():
     comparison = resources.compare_resource_summaries(_summary(registers=53), _summary(registers=52))
 

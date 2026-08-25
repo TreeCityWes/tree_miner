@@ -109,7 +109,20 @@ It walks through the full lifecycle:
 
 ---
 
-## Pytest Version
+## occupancy_canary.sh
+
+GPU-box helper for the multi-warp occupancy experiment. Does **not** open the live
+journal and does **not** change `treeminer.service`. Default mining stays one warp
+per block until this canary plus a golden match say otherwise.
+
+```bash
+# from repo root, after a CUDA miner build
+./treeminer/scripts/occupancy_canary.sh /path/to/xenblocksMiner
+```
+
+Writes golden logs, `hash-benchmark` JSON for warps 1/2/4/8, and Nsight Compute
+Occupancy sections (when `ncu` is on PATH) under `.benchmarks/occupancy/`.
+
 
 There is also a pytest harness at `tests/integration/test_cpp_worker.py`
 that covers the same scenarios. It uses `pytest.mark.skipif` to skip

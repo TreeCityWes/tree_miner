@@ -19,6 +19,7 @@ class HashRequestBase(BaseModel):
     device_id: int = Field(0, alias="device")
     allow_xuni: bool = True
     gpu_first_blocks: bool = False
+    warps_per_block: int = 0
 
 
 class HashOneRequest(HashRequestBase):

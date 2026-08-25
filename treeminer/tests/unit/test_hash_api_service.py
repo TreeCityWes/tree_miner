@@ -137,6 +137,43 @@ def test_validate_rejects_gpu_first_blocks_for_cpu():
     assert "gpu_first_blocks requires backend=cuda" in errors
 
 
+def test_validate_rejects_warps_per_block_for_cpu():
+    errors = validate_hash_payload(
+        {
+            "algorithm": "argon2id-xen",
+            "backend": "cpu",
+            "salt_hex": "aabbccddeeff0011",
+            "key_prefix": "",
+            "target_pattern": "XEN11",
+            "difficulty": 8,
+            "batch_size": 1,
+            "device_id": 0,
+            "warps_per_block": 4,
+        }
+    )
+
+    assert "warps_per_block > 1 requires backend=cuda" in errors
+
+
+def test_batch_endpoint_forwards_warps_per_block():
+    fake = FakeHashClient()
+    client = TestClient(create_app(fake))
+
+    response = client.post(
+        "/hash/v1/batch",
+        json={
+            "salt": "aabbccddeeff0011",
+            "backend": "cuda",
+            "difficulty": 8,
+            "batch_size": 8,
+            "warps_per_block": 4,
+        },
+    )
+
+    assert response.status_code == 200
+    assert fake.calls[0][1]["warps_per_block"] == 4
+
+
 def test_hash_one_validation_requires_key():
     client = TestClient(create_app(FakeHashClient()))
 

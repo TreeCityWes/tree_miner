@@ -1,5 +1,6 @@
 #include "CudaBackend.h"
 #include "CudaException.h"
+#include "hashapi/OneshotLaunch.h"
 #include <cuda_runtime.h>
 #include <cmath>
 
@@ -81,7 +82,23 @@ bool CudaBackend::prepareInputBlocksOnDevice(const std::vector<std::string>& pas
 
 void CudaBackend::run()
 {
-	runner_->run();
+	if (runner_ != nullptr) {
+		runner_->setWarpsPerBlock(warpsPerBlock_);
+		runner_->run();
+	}
+}
+
+void CudaBackend::setWarpsPerBlock(std::uint32_t warps)
+{
+	if (warps == 0) {
+		warpsPerBlock_ = 1;
+		return;
+	}
+	if (warps > hashapi::kMaxWarpsPerBlock) {
+		warpsPerBlock_ = hashapi::kMaxWarpsPerBlock;
+		return;
+	}
+	warpsPerBlock_ = warps;
 }
 
 float CudaBackend::finish()

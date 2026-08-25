@@ -27,6 +27,7 @@ RESOURCE_RE = re.compile(
 
 KERNEL_ALIASES = {
     "_Z21argon2_kernel_oneshotP7block_gj": "argon2_kernel_oneshot",
+    "_Z21argon2_kernel_oneshotP7block_gjjj": "argon2_kernel_oneshot",
     "_Z26argon2_first_blocks_kernelP7block_gPKhjS2_jjjjjjjjy": "argon2_first_blocks_kernel",
 }
 

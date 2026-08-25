@@ -87,4 +87,10 @@ def validate_hash_payload(payload: dict[str, Any], require_key: bool = False) ->
     if payload.get("gpu_first_blocks") and backend != "cuda":
         errors.append("gpu_first_blocks requires backend=cuda")
 
+    warps_per_block = int(payload.get("warps_per_block", 0) or 0)
+    if warps_per_block > 16:
+        errors.append("warps_per_block exceeds maximum of 16")
+    if warps_per_block > 1 and backend != "cuda":
+        errors.append("warps_per_block > 1 requires backend=cuda")
+
     return errors

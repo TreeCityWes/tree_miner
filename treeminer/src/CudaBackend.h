@@ -31,6 +31,7 @@ public:
 	float getLastHostToDeviceMs() const override;
 	float getLastGpuFirstBlockMs() const override;
 	float getLastDeviceToHostMs() const override;
+	void setWarpsPerBlock(std::uint32_t warps) override;
 
 	static std::vector<std::unique_ptr<ComputeBackend>> enumerate();
 
@@ -38,4 +39,5 @@ private:
 	int deviceIndex_;
 	DeviceInfo info_;
 	std::unique_ptr<KernelRunner> runner_;
+	std::uint32_t warpsPerBlock_ = 1;
 };

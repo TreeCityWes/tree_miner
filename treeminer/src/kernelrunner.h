@@ -34,6 +34,7 @@ private:
 
     std::unique_ptr<uint8_t[]> blocksIn;
     std::unique_ptr<uint8_t[]> blocksOut;
+    std::uint32_t warpsPerBlock;
 
     void copyInputBlocks();
     void copyOutputBlocks();
@@ -44,6 +45,7 @@ private:
 public:
 
     std::size_t getBatchSize() const { return batchSize; }
+    void setWarpsPerBlock(std::uint32_t warps);
 
     KernelRunner(uint32_t type, uint32_t version,
         uint32_t passes, uint32_t lanes,

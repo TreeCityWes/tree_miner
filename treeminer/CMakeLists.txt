@@ -248,6 +248,7 @@ set(SOURCE_FILES
     src/hashapi/HashApiSelfTest.cpp
     src/hashapi/HashApiTuning.cpp
     src/hashapi/HashApiValidation.cpp
+    src/hashapi/WarpsPerBlockGolden.cpp
 )
 set(HASHAPI_SOURCE_FILES
     src/hashapi/HashApiCli.cpp
@@ -336,4 +337,22 @@ if(XENBLOCKS_BUILD_HASH_DIAGNOSTICS)
         src/blake2b.cpp
     )
     target_include_directories(argon2-finalize-benchmark PRIVATE src)
+endif()
+
+if(XENBLOCKS_BUILD_MINER AND TREEMINER_BUILD_TESTS)
+    add_executable(treeminer_warps_golden
+        tests/cpp/warps_per_block_golden.cpp
+        src/hashapi/WarpsPerBlockGolden.cpp
+        src/argon2params.cpp
+        src/blake2b.cpp
+        src/kernelrunner.cu
+    )
+    target_include_directories(treeminer_warps_golden PRIVATE src)
+    target_compile_features(treeminer_warps_golden PRIVATE cxx_std_17)
+    target_compile_definitions(treeminer_warps_golden PRIVATE XENBLOCKS_BUILD_MINER=1)
+    target_compile_options(treeminer_warps_golden PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets>
+    )
+    target_link_libraries(treeminer_warps_golden PRIVATE CUDA::cudart)
+    add_test(NAME hashapi.warps_per_block_golden COMMAND treeminer_warps_golden)
 endif()

@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "CudaException.h"
+#include "hashapi/OneshotLaunch.h"
 
 #define ARGON2_D  0
 #define ARGON2_I  1
@@ -810,19 +811,25 @@ __device__ void argon2_step_dependent(
 
 __global__ void argon2_kernel_oneshot(
         struct block_g * __restrict__ memory,
-        uint32_t segment_blocks)
+        uint32_t segment_blocks,
+        uint32_t batch_size,
+        uint32_t warps_per_block)
 {
-    extern __shared__ struct block_l shared;
+    extern __shared__ struct block_l shared[];
 
-    uint32_t job_id = blockIdx.x;
-    uint32_t thread = threadIdx.x;
+    const uint32_t warp = threadIdx.x / THREADS_PER_LANE;
+    const uint32_t thread = threadIdx.x % THREADS_PER_LANE;
+    const uint32_t job_id = blockIdx.x * warps_per_block + warp;
+    if (job_id >= batch_size) {
+        return;
+    }
 
     uint32_t lane_blocks = ARGON2_SYNC_POINTS * segment_blocks;
 
     memory += (size_t)job_id * lane_blocks;
 
     struct block_th prev, addr;
-    struct block_l* tmp = &shared;
+    struct block_l* tmp = &shared[warp];
     uint32_t thread_input;
 
     thread_input = (thread == 3) * lane_blocks + (thread == 4) + (thread == 5) * 2 + (thread == 6);
@@ -923,9 +930,22 @@ KernelRunner::KernelRunner(uint32_t type, uint32_t version, uint32_t passes,
           deviceFirstBlockVersion(0), deviceFirstBlockType(0),
           deviceFirstBlockLanes(0), lastUsedDeviceFirstBlocks(false),
           start(), end(), copyStart(), copyEnd(), firstBlockStart(), firstBlockEnd(), kernelStart(), kernelEnd(),
-          blocksIn(nullptr), blocksOut(nullptr)
+          blocksIn(nullptr), blocksOut(nullptr), warpsPerBlock(hashapi::kDefaultWarpsPerBlock)
 {
 
+}
+
+void KernelRunner::setWarpsPerBlock(std::uint32_t warps)
+{
+    if (warps == 0) {
+        warpsPerBlock = hashapi::kDefaultWarpsPerBlock;
+        return;
+    }
+    if (warps > hashapi::kMaxWarpsPerBlock) {
+        warpsPerBlock = hashapi::kMaxWarpsPerBlock;
+        return;
+    }
+    warpsPerBlock = warps;
 }
 
 void KernelRunner::init(std::size_t batchSize_){
@@ -1157,11 +1177,17 @@ void KernelRunner::runDeviceFirstBlockKernel()
 
 void KernelRunner::runKernelOneshot()
 {
+    static_assert(sizeof(struct block_l) == hashapi::kOneshotSharedBytesPerWarp,
+                  "OneshotLaunch shared-bytes constant must match block_l");
+    static_assert(THREADS_PER_LANE == hashapi::kThreadsPerLane,
+                  "OneshotLaunch lane width must match the kernel");
     struct block_g *memory_blocks = (struct block_g *)memory;
-    uint32_t sharedSize = sizeof(struct block_l);
+    const auto launch = hashapi::makeOneshotLaunch(batchSize, warpsPerBlock);
     argon2_kernel_oneshot
-            <<<dim3(batchSize), dim3(THREADS_PER_LANE), sharedSize, stream>>>(
-                memory_blocks, segmentBlocks);
+            <<<dim3(launch.grid), dim3(launch.threads), launch.shared_bytes, stream>>>(
+                memory_blocks, segmentBlocks,
+                static_cast<uint32_t>(batchSize),
+                launch.warps_per_block);
 }
 
 void KernelRunner::run()

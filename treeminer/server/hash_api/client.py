@@ -121,5 +121,8 @@ class HashCliClient:
             args.append("--no-xuni")
         if payload.get("gpu_first_blocks") is True:
             args.append("--gpu-first-blocks")
+        warps_per_block = int(payload.get("warps_per_block", 0) or 0)
+        if warps_per_block > 0:
+            args.extend(["--warps-per-block", str(warps_per_block)])
 
         return args

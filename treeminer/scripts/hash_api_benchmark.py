@@ -89,6 +89,7 @@ class BenchmarkScenario:
     first_block_dynamic_chunk_size: int = 0
     first_block_dynamic_chunk_auto: bool = False
     gpu_first_blocks: bool = False
+    warps_per_block: int = 0
     auto_batch_size: bool = False
 
 
@@ -191,6 +192,7 @@ def parse_scenario(text: str, default_warmup: int = 0, default_repeat: int = 1) 
         first_block_dynamic_chunk_auto=parts.get("first_block_dynamic_chunk_auto", "false").lower()
         in {"1", "true", "yes"},
         gpu_first_blocks=parts.get("gpu_first_blocks", "false").lower() in {"1", "true", "yes"},
+        warps_per_block=max(0, int(parts.get("warps_per_block", "0"))),
         auto_batch_size=parts.get("auto_batch_size", "false").lower() in {"1", "true", "yes"},
     )
 
@@ -867,6 +869,7 @@ def summarize_result(scenario: BenchmarkScenario, result: dict[str, Any]) -> dic
             result.get("first_block_chunk_size", 0),
         ),
         "gpu_first_blocks": result.get("gpu_first_blocks", scenario.gpu_first_blocks),
+        "warps_per_block": result.get("warps_per_block", scenario.warps_per_block),
         "elapsed_ms": result.get("elapsed_ms", 0.0),
         "hashrate": result.get("hashrate", 0.0),
         "timings": summarize_timings(result.get("timings", {})),
@@ -930,6 +933,7 @@ def summarize_iterations(scenario: BenchmarkScenario, summaries: list[dict[str, 
             [item.get("first_block_chunk_size_max", item.get("first_block_chunk_size", 0)) for item in ok_summaries]
         ),
         "gpu_first_blocks": scenario.gpu_first_blocks,
+        "warps_per_block": scenario.warps_per_block,
         "elapsed_ms": elapsed_ms,
         "ms_per_attempt": elapsed_ms / attempts if attempts > 0 else 0.0,
         "hashrate": median_hashrate,
@@ -1035,6 +1039,7 @@ def build_recommendations(runs: list[dict[str, Any]]) -> dict[str, Any]:
                 summary.get("first_block_chunk_size_max", summary.get("first_block_chunk_size", 0)) or 0
             ),
             "gpu_first_blocks": bool(summary.get("gpu_first_blocks", False)),
+            "warps_per_block": int(summary.get("warps_per_block", 0) or 0),
             "median_hashrate": float(summary.get("median_hashrate", summary.get("hashrate", 0.0)) or 0.0),
             "min_hashrate": float(summary.get("min_hashrate", summary.get("hashrate", 0.0)) or 0.0),
             "max_hashrate": float(summary.get("max_hashrate", summary.get("hashrate", 0.0)) or 0.0),
@@ -1202,6 +1207,7 @@ def sanitize_scenario(scenario: dict[str, Any]) -> dict[str, Any]:
         "first_block_dynamic_chunk_size",
         "first_block_dynamic_chunk_auto",
         "gpu_first_blocks",
+        "warps_per_block",
     )
     sanitized = {key: scenario[key] for key in safe_keys if key in scenario}
     if "key_mode" not in sanitized:
@@ -1319,6 +1325,8 @@ def build_hash_command(binary: Path, salt: str, scenario: BenchmarkScenario) -> 
         command.append("--first-block-dynamic-chunk-auto")
     if scenario.gpu_first_blocks:
         command.append("--gpu-first-blocks")
+    if scenario.warps_per_block > 0:
+        command.extend(["--warps-per-block", str(scenario.warps_per_block)])
     return command
 
 

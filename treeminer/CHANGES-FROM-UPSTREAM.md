@@ -134,4 +134,9 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   unattended-upgrades blacklist (`51-treeminer-no-auto-driver`) so NVIDIA driver/kernel
   updates are deliberate operator actions — an automatic 2 AM driver swap mid-mining
   (2026-08-11) preceded the reset storm and the NVML mismatch that broke `nvidia-smi`.
+- **Multi-warp occupancy experiment (default OFF):** `argon2_kernel_oneshot` can pack N
+  independent hashes per CUDA block (`--warpsPerBlock` / Hash API `warps_per_block`, 1–16).
+  Default remains Woody's one-warp-per-block launch. N>1 is fail-closed at startup via
+  `runWarpsPerBlockGolden` (same first-blocks, warps=1 vs N must match). Do not enable on
+  the live `treeminer.service` until `scripts/occupancy_canary.sh` is green on that box.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

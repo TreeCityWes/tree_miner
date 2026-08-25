@@ -61,6 +61,9 @@ public:
 	virtual float getLastHostToDeviceMs() const { return 0.0f; }
 	virtual float getLastGpuFirstBlockMs() const { return 0.0f; }
 	virtual float getLastDeviceToHostMs() const { return 0.0f; }
+
+	// Occupancy experiment: hashes packed per CUDA block. Default 1 (Woody shape).
+	virtual void setWarpsPerBlock(std::uint32_t warps) { (void)warps; }
 };
 
 // Enumerate all available compute devices for the compiled backend.

@@ -1,4 +1,5 @@
 #include "HashApiValidation.h"
+#include "OneshotLaunch.h"
 
 #include <algorithm>
 #include <cctype>
@@ -118,6 +119,13 @@ std::vector<std::string> validateRequest(const HashApiRequest& request)
 
     if (request.gpu_first_blocks && request.backend != "cuda") {
         errors.push_back("gpu_first_blocks requires backend=cuda");
+    }
+
+    if (request.warps_per_block > kMaxWarpsPerBlock) {
+        errors.push_back("warps_per_block exceeds maximum of 16");
+    }
+    if (request.warps_per_block > 1 && request.backend != "cuda") {
+        errors.push_back("warps_per_block > 1 requires backend=cuda");
     }
 
     return errors;

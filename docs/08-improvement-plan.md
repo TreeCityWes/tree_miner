@@ -149,7 +149,7 @@ Do **not** touch occupancy / `cp.async` / `__launch_bounds__` until first-blocks
 | **H2** | Re-enable `kGpuFirstBlocksEnabled` only after H1 vectors + startup self-test + a live 401-free canary. Keep a one-line kill switch. | Production speed. |
 | **H3** | Device-side finalize + hit-only DtoH (`docs/06` B.3 #4). ~4% and it deletes the CPU finalize thread. PLAN §10.10: needs the persistent hit-buffer model; upstream failed on output-buffer lifetime. | Phase 2, golden-gated. |
 | **H4** | Double-buffered streams per GPU (already have `--cudaStreams 1\|2`). Overlap batch B first-blocks/finalize with batch A oneshot. | Small, safer after H3. |
-| **H5** | Precompute indexed-half ref table (identical for every hash at fixed `m`) + `cp.async` prefetch on sm80+. Multi-warp-per-block only with Nsight occupancy evidence. Per-arch batch/occupancy table + 30 s startup autotune keyed on `(cc, m-band)`. | Phase 3. Honest +25–60%. |
+| **H5** | Multi-warp flag is in tree (`--warpsPerBlock`, default 1). Next: Nsight occupancy dump + golden on a GPU box (`scripts/occupancy_canary.sh`), then precompute indexed-half refs + `cp.async` on sm80+. Per-arch autotune keyed on `(cc, m-band)`. | Phase 3. Honest +25–60%. Do not enable N>1 on the live unit until the canary is green. |
 
 Dead ends (do not reopen): `__launch_bounds__`, source-lane-only address selection, CPU hot-path rewrites, L1 carveout games, “1000%” as a near-term claim (`HASH_OPTIMIZATION_GOAL.md` aspirational 11× is a direction, not this quarter).
 

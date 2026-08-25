@@ -183,6 +183,9 @@ All optional; defaults reproduce safe behavior. Existing Woody config keys uncha
 - **Phase 3 (ongoing):** occupancy (multi-warp blocks), precomputed indexed-half refs +
   `cp.async` prefetch, per-arch autotune (docs/06 B.3 #1–3, #6) under experiment-ledger
   discipline with golden-hash gates. Honest target: +25–60% over parity on consumer GPUs.
+  `warps_per_block` / `--warpsPerBlock` is in tree, **default 1** (live shape unchanged).
+  Values 2–16 are fail-closed behind `runWarpsPerBlockGolden` and need an Nsight dump
+  (`scripts/occupancy_canary.sh`) before production.
 
 ## 8. Risks (carried from docs/05 §6)
 

@@ -132,6 +132,7 @@ std::chrono::system_clock::time_point start_time = std::chrono::system_clock::no
 std::string globalRpcLink = "http://xenblocks.io";
 std::size_t globalMaxBatchSize = 0; // 0 = auto (use all free GPU memory)
 std::size_t globalCudaStreamsPerDevice = 1;
+std::size_t globalWarpsPerBlock = 1;
 std::atomic<std::size_t> globalQueuedXnm{0};
 std::atomic<std::size_t> globalQueuedXuni{0};
 std::atomic<LastSubmissionState> globalLastSubmission{LastSubmissionState::None};
