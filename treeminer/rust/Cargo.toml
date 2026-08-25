@@ -5,6 +5,7 @@ members = [
     "crates/treeminer-journal",
     "crates/treeminer-submit",
     "crates/treeminer-hash",
+    "crates/treeminer-orchestrator",
 ]
 
 [workspace.package]

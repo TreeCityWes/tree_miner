@@ -29,9 +29,10 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
 - **Host protocol (Rust, incremental):** `treeminer/rust/` — `treeminer-protocol` (classifier /
   PHC / margin / XUNI), `treeminer-journal` (SQLite WAL + `synchronous=FULL` + JSONL
   fallback sink), `treeminer-submit` (breaker / drain / `SubmissionManager`, Tokio one
-  worker), and `treeminer-hash` (C ABI around `hash-batch`; kernel stays `nvcc`). The
-  orchestrator crate replaces remaining host C++ behind the existing process. CUDA stays
-  `nvcc`. The C++ journal remains the live miner path.
+  worker), `treeminer-hash` (C ABI around `hash-batch`; kernel stays `nvcc`), and
+  `treeminer-orchestrator` (config + journal-first capture + drain + hash CLI; binary
+  `treeminer`). CUDA stays `nvcc`. The C++ miner (`xenblocksMiner` / `main.cpp`) remains
+  the live GPU process; the Rust host is additive and not wired into CMake.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a
   thin RAII class. WAL mode, `synchronous=FULL`.
 - **Build: CMake + vcpkg** (inherited; add one dependency line).

@@ -153,3 +153,8 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   `treeminer_hash.cpp` dispatches to `CpuHashBackend` / `CudaHashBackend` (kernel stays
   `kernelrunner.cu`). Validation and matching ported 1:1. Not wired into `xenblocksMiner`
   yet.
+- **Rust orchestrator crate** (`treeminer/rust/crates/treeminer-orchestrator`): host process
+  that replaces the *role* of `main.cpp` for journal-first capture, recover, drain, and
+  Hash API CLI (`hash-one` / `hash-batch`). Binary `treeminer`. HTTP via `std::net`
+  (not cpr/ureq); config.txt + argv without Boost; no Crow/TUI FFI. CUDA mine loop
+  stays in `xenblocksMiner`. Not wired into CMake.

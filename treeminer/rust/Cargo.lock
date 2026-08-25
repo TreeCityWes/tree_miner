@@ -204,6 +204,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "treeminer-orchestrator"
+version = "0.1.0"
+dependencies = [
+ "treeminer-hash",
+ "treeminer-journal",
+ "treeminer-protocol",
+ "treeminer-submit",
+]
+
+[[package]]
 name = "treeminer-protocol"
 version = "0.1.0"
 
