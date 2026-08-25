@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/treeminer-protocol",
+    "crates/treeminer-journal",
+    "crates/treeminer-submit",
+    "crates/treeminer-hash",
+    "crates/treeminer-orchestrator",
+]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+publish = false
+
+[workspace.lints.rust]
+# `deny` (not `forbid`) so `treeminer-hash` can allow `unsafe` at the C ABI boundary only.
+# Other crates inherit deny and must not contain unsafe.
+unsafe_code = "deny"

@@ -25,7 +25,17 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
 ## 2. Languages & toolchain
 
 - **Core miner: C++17 + CUDA** — inherited from the fork; the kernel is proven and MIT-clean.
-  No rewrite in another language in Phase 1; churn there risks the one component that already works.
+  No rewrite of the kernel in another language; churn there risks the one component that already works.
+- **Host protocol (Rust, incremental):** `treeminer/rust/` — `treeminer-protocol` (classifier /
+  PHC / margin / XUNI), `treeminer-journal` (SQLite WAL + `synchronous=FULL` + JSONL
+  fallback sink), `treeminer-submit` (breaker / drain / `SubmissionManager`, Tokio one
+  worker), `treeminer-hash` (C ABI around `hash-batch`; kernel stays `nvcc`), and
+  `treeminer-orchestrator` (config + journal-first capture + `mine` loop + drain + hash CLI; binary
+  `treeminer`). CUDA stays `nvcc`. The C++ miner (`xenblocksMiner` / `main.cpp`) remains
+  the live GPU process. Optional CMake target `treeminer_hash` (`-DTREEMINER_BUILD_HASH_FFI=ON`,
+  default OFF) builds `libtreeminer_hash.so` for Rust `--features cuda`; it is **not** linked
+  into `xenblocksMiner`. Default `cargo test` links `native/stub.c` and must not enable `cuda`
+  in CI.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a
   thin RAII class. WAL mode, `synchronous=FULL`.
 - **Build: CMake + vcpkg** (inherited; add one dependency line).

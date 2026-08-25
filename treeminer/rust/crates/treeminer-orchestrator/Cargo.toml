@@ -1,0 +1,24 @@
+[package]
+name = "treeminer-orchestrator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Rust host: config, journal-first capture, drain, hash CLI. CUDA mine loop stays in C++."
+
+[[bin]]
+name = "treeminer"
+path = "src/bin/treeminer.rs"
+
+[dependencies]
+treeminer-hash = { path = "../treeminer-hash" }
+treeminer-journal = { path = "../treeminer-journal" }
+treeminer-protocol = { path = "../treeminer-protocol" }
+treeminer-submit = { path = "../treeminer-submit" }
+
+[features]
+default = []
+cuda = ["treeminer-hash/cuda"]
+
+[lints]
+workspace = true

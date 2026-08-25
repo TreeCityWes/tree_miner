@@ -1,0 +1,40 @@
+name: Rust protocol
+
+on:
+  push:
+    paths:
+      - "treeminer/rust/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "treeminer/rust/**"
+      - ".github/workflows/rust.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Forbid CUDA feature in CI
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path(".github/workflows/rust.yml").read_text()
+          for i, line in enumerate(text.splitlines(), 1):
+              stripped = line.lstrip()
+              if stripped.startswith("#"):
+                  continue
+              if "cargo " not in stripped:
+                  continue
+              if "--features cuda" in stripped or "--features=cuda" in stripped:
+                  raise SystemExit(f"{i}: CI must not enable --features cuda: {line}")
+          print("ok: rust CI stays on the C stub (no --features cuda)")
+          PY
+      - name: Test
+        # Do not pass --features cuda: that links libtreeminer_hash (GPU) and is not for CI.
+        run: cargo test --manifest-path treeminer/rust/Cargo.toml --workspace
+      - name: Format
+        run: cargo fmt --manifest-path treeminer/rust/Cargo.toml --all -- --check

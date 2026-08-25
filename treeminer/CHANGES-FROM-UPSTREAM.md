@@ -146,3 +146,30 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   toolkit PTX fallback when local CC exceeds nvcc max, and a host hit-buffer ownership
   model for device-side finalize (`HostHitBuffer` — not wired into the kernel yet).
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.
+- **Rust host protocol crate** (`treeminer/rust/crates/treeminer-protocol`): 1:1 port of
+  `ResponseClassifier`, `PhcAssembler` (unpadded PHC base64), `MarginPolicy`, and
+  `xuniWindowAt`. Zero GPU, `unsafe_code` denied in protocol/journal/submit. C++ miner is
+  unchanged; the orchestrator crate replaces remaining host code behind the current process.
+- **Rust journal crate** (`treeminer/rust/crates/treeminer-journal`): 1:1 port of
+  `FindJournal` + `FallbackSink`. Same schema, WAL + `synchronous=FULL`, journal-first
+  COMMIT, JSONL fallback with fsync. 17 unit tests port the C++ journal suites. Not wired
+  into `xenblocksMiner` yet.
+- **Rust submit crate** (`treeminer/rust/crates/treeminer-submit`): 1:1 port of
+  `CircuitBreaker`, `DrainScheduler`, and `SubmissionManager`. Transport is a trait (no
+  cpr/Crow). Tests drive `run_once` with injectable clocks; a Tokio current-thread worker
+  hosts the drain loop. Same pending/acked/parked/dead state machine, lying-200
+  confirmation, and fatal journal-error boundary. Not wired into `xenblocksMiner` yet.
+- **Rust hash crate** (`treeminer/rust/crates/treeminer-hash`): C ABI around Hash API
+  `hash-batch` (`src/hashapi/treeminer_hash.h`). Cargo tests link a C stub; production
+  `treeminer_hash.cpp` dispatches to `CpuHashBackend` / `CudaHashBackend` (kernel stays
+  `kernelrunner.cu`). Validation and matching ported 1:1. Optional CMake target
+  `treeminer_hash` (`-DTREEMINER_BUILD_HASH_FFI=ON`, default OFF) builds
+  `libtreeminer_hash.so` for Rust `--features cuda`. That library is **not** linked into
+  `xenblocksMiner`.
+- **Rust orchestrator crate** (`treeminer/rust/crates/treeminer-orchestrator`): host process
+  that replaces the *role* of `main.cpp` for journal-first capture, recover, drain, and
+  Hash API CLI (`hash-one` / `hash-batch`). Binary `treeminer` now also has a
+  journal-first `mine` loop (hash-batch → capture → drain) using the hash FFI stub
+  in Cargo tests. `--features cuda` is the GPU canary (`mine --backend cuda --donotupload`
+  on a separate journal). HTTP via `std::net` (not cpr/ureq); config.txt + argv without Boost;
+  no Crow/TUI FFI. Live GPU process stays `xenblocksMiner`. Not wired into systemd.
