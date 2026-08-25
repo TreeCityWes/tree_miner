@@ -1,0 +1,75 @@
+name: ROCm-build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: rocm/dev-ubuntu-22.04:6.2-complete
+    env:
+      _VCPKG_: ${{ github.workspace }}/vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-linux-static
+      VCPKG_OVERLAY_TRIPLETS: ${{ github.workspace }}/custom-triplets
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+    - name: Install dependencies
+      run: |
+        apt-get update
+        apt-get install -y git curl zip unzip tar build-essential pkg-config \
+          ninja-build autoconf automake libtool perl
+        git config --global --add safe.directory "*"
+
+    - name: Get CMake 3.29.0
+      run: |
+          curl -L https://github.com/Kitware/CMake/releases/download/v3.29.0/cmake-3.29.0-linux-x86_64.sh -o cmake-install.sh
+          chmod +x cmake-install.sh
+          ./cmake-install.sh --skip-license --prefix=/usr/local
+
+    - uses: actions/checkout@v4
+      with:
+        submodules: recursive
+
+    - name: Restore vcpkg
+      uses: actions/cache@v4
+      with:
+        path: |
+          ${{ env._VCPKG_ }}
+          !${{ env._VCPKG_ }}/buildtrees
+          !${{ env._VCPKG_ }}/packages
+          !${{ env._VCPKG_ }}/downloads
+          !${{ env._VCPKG_ }}/installed
+        key: ${{ runner.os }}-vcpkg-${{ hashFiles('**/vcpkg.json') }}
+        restore-keys: |
+          ${{ runner.os }}-vcpkg-
+
+    - name: Restore from cache and setup vcpkg executable and data files.
+      uses: lukka/run-vcpkg@v11.1
+      with:
+        vcpkgJsonGlob: 'vcpkg.json'
+
+    - name: Restore vcpkg installed packages
+      uses: actions/cache@v4
+      with:
+        path: build/vcpkg_installed
+        key: vcpkg-installed-${{ runner.os }}-x64-linux-static-${{ hashFiles('vcpkg.json') }}
+
+    - name: Build
+      # No AMD GPU on the runner, so the gfx targets are pinned rather than detected.
+      run: |
+          export PATH="/opt/rocm/bin:$PATH"
+          cmake -B build -S . --preset ninja-multi-vcpkg \
+            -DTREEMINER_GPU_BACKEND=HIP \
+            -DCMAKE_HIP_ARCHITECTURES="gfx906;gfx90a;gfx942;gfx1030;gfx1100"
+          cmake --build build --preset ninja-vcpkg-release
+
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: xenblocksMiner-linux-rocm
+        path: build/bin

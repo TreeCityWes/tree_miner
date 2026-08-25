@@ -16,7 +16,15 @@ constexpr std::size_t kMaxCpuBatchSize = 10000;
 // (wrong digests, server 401s — commit 12e241c); under CUDA 13.3 the same kernel matches
 // the CPU reference on real sm_86 hardware. The startup self-test exercises this exact
 // flag and refuses to mine on mismatch, so a bad toolchain fails closed at launch.
+#if defined(TREEMINER_GPU_HIP)
+// ROCm: the first-blocks kernel has not been validated against the CPU reference on AMD
+// hardware yet, so mining keeps first blocks on the CPU. The startup self-test still
+// probes the GPU path and prints whether it matched, which is how this gets flipped once
+// a real gfx target confirms it.
+constexpr bool kGpuFirstBlocksEnabled = false;
+#else
 constexpr bool kGpuFirstBlocksEnabled = true;
+#endif
 
 struct HashApiRequest {
     std::string request_id;

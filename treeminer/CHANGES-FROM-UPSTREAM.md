@@ -4,7 +4,9 @@ TreeMiner is a fork of woodysoil/XenblocksMiner (MIT, declared in upstream READM
 Protocol knowledge additionally derives from reading jacklevin74/xenminer (unlicensed — **no code
 copied from it, ever**) and ops lessons from JozefJarosciak/xgpu (no code copied).
 
-Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry **zero diffs**.
+Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry **zero diffs**
+on the NVIDIA path — the AMD/ROCm backend adds compile-time branches only, so every
+NVIDIA build still preprocesses to the upstream kernel (see the ROCm entry below).
 
 ## Change log
 
@@ -145,6 +147,43 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   (`cudaErrorNoKernelImageForDevice` skips that card instead of killing the process),
   toolkit PTX fallback when local CC exceeds nvcc max, and a host hit-buffer ownership
   model for device-side finalize (`HostHitBuffer` — not wired into the kernel yet).
+- **AMD ROCm backend** (`src/gpu/GpuRuntime.h`, `src/gpu/GpuTelemetry.*`, `CMakeLists.txt`,
+  `CMakePresets.json`, `kernelrunner.cu`, `StatReporter.cpp`, `HashApiTypes.h`,
+  `main.cpp`): the miner now builds for AMD cards through HIP, selected with
+  `-DTREEMINER_GPU_BACKEND=HIP`. NVIDIA remains the default and its build is unchanged —
+  `GpuRuntime.h` maps the ~25 CUDA runtime calls onto their HIP equivalents only when
+  `TREEMINER_GPU_HIP` is defined, and every kernel-level difference is behind the same
+  guard. Three real differences: (1) an Argon2 lane is 32 threads but gfx9/CDNA wavefronts
+  are 64, so shuffles are pinned to an explicit 32-lane width (`TM_SHFL`/`TM_SHFL_XOR`)
+  instead of relying on the implicit warp width; (2) the hand-written PTX `g()` cannot be
+  assembled by the AMD compiler, so ROCm uses the existing C++ `g1()` form; (3) power and
+  utilization come from ROCm SMI rather than NVML, behind a vendor-neutral
+  `gputelemetry::TelemetrySession` (optional — a missing ROCm SMI only disables those
+  gauges). `kGpuFirstBlocksEnabled` stays `false` on ROCm until the first-blocks kernel is
+  confirmed against the CPU reference on real AMD hardware; the startup CPU/GPU self-test
+  probes it and reports the result either way, and still refuses to mine on mismatch.
+  gfx targets are auto-detected via `amdgpu-arch`/`rocminfo` with a fat-binary fallback.
+  Verified on an RX 7900 XTX (gfx1100, ROCm 7.2): startup CPU/GPU self-test passes on both
+  first-block paths, `hash-one` digests match the CPU reference byte for byte, 27/27 CTest
+  suites pass, and the miner sustains ~5.2 kH/s at difficulty 42069 / ~3.3 kH/s at 60000.
+  Kernel also compiles clean for gfx906/gfx90a/gfx942/gfx1030.
+- **GPU first-blocks decided per device, not per build** (`MiningCommon.*`, `MineUnit.cpp`,
+  `main.cpp`): `kGpuFirstBlocksEnabled` is now only the default. The startup self-test
+  already probed the GPU first-blocks path; it now records the verdict per device and
+  `MineUnit` reads it when building each batch. A device that matches the CPU reference
+  uses the fast path; one that does not keeps first blocks on the CPU rather than being
+  trusted on a build-time guess. NVIDIA behaviour is unchanged (the constant is `true`, the
+  self-test gates mining on it, a mismatching device is still skipped).
+- **ROCm VRAM headroom** (`hashapi/HashApiTuning.cpp`): ROCm satisfies an over-large device
+  allocation from host (GTT) memory instead of failing it, so the batch estimator's 100 MiB
+  cushion silently produced a pool that ran across PCIe — measured at difficulty 60000 on a
+  24 GiB gfx1100, batch 410 held 3.1 kH/s and batch 415 collapsed to 0.5 kH/s
+  (`--auto-batch-size` picked 415 and got 0.2 kH/s). The HIP path now reserves at least
+  1 GiB or 1/16th of free VRAM; auto-batch selects 391 and holds 3.3 kH/s. CUDA is unchanged.
+- **Buildable without vcpkg** (`flake.nix`, `CMakeLists.txt`, `src/journal/`, test CMake):
+  dependency lookups accept the upstream CMake config or pkg-config files alongside vcpkg's
+  `unofficial-*` exports (argon2, SQLite, Crypto++, secp256k1). `flake.nix` provides a ROCm
+  dev shell with the HIP toolchain and every library the miner links.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.
 - **Rust host protocol crate** (`treeminer/rust/crates/treeminer-protocol`): 1:1 port of
   `ResponseClassifier`, `PhcAssembler` (unpadded PHC base64), `MarginPolicy`, and

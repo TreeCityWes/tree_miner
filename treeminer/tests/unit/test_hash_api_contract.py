@@ -527,16 +527,25 @@ def test_mine_unit_uses_hash_api_batch_size_tuning_without_overriding_manual_lim
     assert "globalMaxBatchSize" in implementation
     assert "selected_batch_size == 0" in implementation
     assert "batchSize = batchDecision.selected_batch_size" in implementation
-    assert "request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled" in implementation
+    # The GPU first-blocks path is decided per device by the startup self-test, not by a
+    # build-time constant: MineUnit reads the recorded verdict for the device it mines on.
+    assert "request.gpu_first_blocks = gpuFirstBlocksVerified(request.device_id)" in implementation
+    mining_common = read("src/MiningCommon.cpp")
+    assert "setGpuFirstBlocksVerified" in mining_common
+    # Devices the self-test never reached fall back to the compile-time default.
+    assert "hashapi::kGpuFirstBlocksEnabled" in mining_common
     types = read("src/hashapi/HashApiTypes.h")
     main = read("src/main.cpp")
     # Enabled under the CUDA 13 toolchain (nvcc 11.5 miscompiled this path — 12e241c).
     # The value itself is a toolchain decision; what must never regress is the guard:
     # the startup self-test gates mining on this exact flag, whatever its value.
     assert "constexpr bool kGpuFirstBlocksEnabled = true" in types
+    # ROCm ships the same guard with a conservative default until a device proves itself.
+    assert "constexpr bool kGpuFirstBlocksEnabled = false" in types
     assert "runCpuCudaSelfTest" in main
     assert "Mining was not started" in main
     assert "GPU-first-blocks probe" in main
+    assert "setGpuFirstBlocksVerified" in main
     assert "skipping this device" in main
     assert implementation.index("backend_.releaseBuffers()") < implementation.index("backend_.getFreeMemory()")
 

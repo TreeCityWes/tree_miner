@@ -8,6 +8,15 @@ std::size_t estimateCudaMemoryBatchLimit(std::size_t free_memory_bytes,
                                          std::uint32_t difficulty,
                                          std::size_t reserve_bytes)
 {
+#if defined(TREEMINER_GPU_HIP)
+    // ROCm does not fail an allocation that no longer fits in VRAM — it satisfies it from
+    // host (GTT) memory, so the pool allocates fine and every kernel then runs across PCIe.
+    // Measured on a 24 GiB gfx1100 at difficulty 60000: batch 410 held 3.1 kH/s, batch 415
+    // (99% of VRAM) collapsed to 0.5 kH/s. A 100 MiB cushion cannot see that edge, so keep
+    // a proportional one and stay device-local.
+    constexpr std::size_t kHipReserveFloorBytes = 1024ULL * 1024ULL * 1024ULL;
+    reserve_bytes = std::max({reserve_bytes, kHipReserveFloorBytes, free_memory_bytes / 16});
+#endif
     if (difficulty == 0 || free_memory_bytes <= reserve_bytes) {
         return 0;
     }

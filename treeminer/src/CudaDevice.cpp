@@ -2,7 +2,7 @@
 #include "hashapi/CudaSkip.h"
 #include <stdexcept>
 #include <cstddef>
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 #include <sstream>
 #include <cmath>
 

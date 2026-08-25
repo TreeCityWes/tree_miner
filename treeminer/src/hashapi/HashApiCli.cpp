@@ -8,7 +8,7 @@
 #include "CudaHashBackend.h"
 #include "../CudaBackend.h"
 #include "../CudaException.h"
-#include <cuda_runtime.h>
+#include "../gpu/GpuRuntime.h"
 #endif
 
 #include <algorithm>

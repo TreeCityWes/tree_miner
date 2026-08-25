@@ -19,7 +19,19 @@
 # Dependency: vcpkg port `sqlite3` (already listed in vcpkg.json).
 # ---------------------------------------------------------------------------------------
 
-find_package(unofficial-sqlite3 CONFIG REQUIRED)
+# vcpkg exports SQLite as unofficial-sqlite3; distro/nix installs ship the upstream
+# library that CMake's own FindSQLite3 module locates. Accept either.
+find_package(unofficial-sqlite3 CONFIG QUIET)
+if(unofficial-sqlite3_FOUND)
+    set(TREEMINER_SQLITE3_TARGET unofficial::sqlite3::sqlite3)
+else()
+    find_package(SQLite3 REQUIRED)
+    if(TARGET SQLite3::SQLite3)
+        set(TREEMINER_SQLITE3_TARGET SQLite3::SQLite3)
+    else()
+        set(TREEMINER_SQLITE3_TARGET SQLite::SQLite3)
+    endif()
+endif()
 
 add_library(treeminer_journal STATIC
     FindJournal.cpp
@@ -31,4 +43,4 @@ target_include_directories(treeminer_journal PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/
 
 target_compile_features(treeminer_journal PUBLIC cxx_std_17)
 
-target_link_libraries(treeminer_journal PUBLIC unofficial::sqlite3::sqlite3)
+target_link_libraries(treeminer_journal PUBLIC ${TREEMINER_SQLITE3_TARGET})

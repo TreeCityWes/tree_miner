@@ -167,7 +167,7 @@ Dead ends (do not reopen): `__launch_bounds__`, source-lane-only address selecti
 
 The kernel has **no** `__CUDA_ARCH__` specials, no tensor cores, no `cp.async` yet. Turing through Blackwell can run this SASS. What fails is **missing cubin**, not an illegal instruction.
 
-`ComputeBackend` is a CUDA-shaped interface. `enumerateBackends()` is hardwired to `CudaBackend::enumerate()`. There is no HIP, OpenCL, or ROCm in this tree. HiveOS still points AMD at `levykrak/xengpuminer`.
+`ComputeBackend` is still a CUDA-shaped interface (`enumerateBackends()` → `CudaBackend::enumerate()`). An opt-in HIP/ROCm backend now compiles the same sources (`-DTREEMINER_GPU_BACKEND=HIP`); NVIDIA CUDA remains the default binary. HiveOS still points AMD at `levykrak/xengpuminer` until a TreeMiner ROCm artifact is the advertised download.
 
 ### 4.2 Honest matrix
 
@@ -178,7 +178,7 @@ The kernel has **no** `__CUDA_ARCH__` specials, no tensor cores, no `cp.async` y
 | 40-series sm_89 | Fine | Native | JIT from `compute_86` (works, first-launch tax) |
 | 50-series sm_120 | Fine (no 12.0 ISA used) | **Not emitted** (CI toolkit 11.8 < 12.8) | JIT hope, unproven as a product |
 | Datacenter Blackwell sm_100 | Not listed | No | Unknown |
-| AMD GPU | No backend | No | No |
+| AMD GPU | HIP opt-in (`TREEMINER_GPU_BACKEND=HIP`) | ROCm CI lane | No (this box is NVIDIA) |
 | CPU-only process | Sidecar / `hashapi-cli` | `xenblocksMiner` still requires CUDA init | Sidecar after GPU init |
 
 Docs oversell 50-series. `BUILD_INSTRUCTIONS.md` and the Windows `cuda-release-vcpkg-modern` preset talk about a 12.8 fat binary with `120`. Linux CI cannot produce that artifact. Configuring **on** a 50-series box with toolkit < 12.8 **fatal-errors** instead of falling back to highest virtual PTX.
@@ -194,8 +194,8 @@ Detect-on-this-3060 is why a TreeMiner zip from this host will not boot a 2080. 
 3. Detect fallback: if local CC > toolkit max, use highest virtual PTX instead of `FATAL_ERROR`.
 4. Runtime: if `cudaErrorNoKernelImageForDevice`, **skip that card**, mine the others, log CC. Today the process dies at self-test for everyone.
 5. Point `HIVEOS.md` at TreeMiner artifacts once CI actually contains 75+89+120. It still installs Woody 1.3.1.
-6. Do **not** hipify `kernelrunner.cu` in this phase. Cost is a rewrite of PTX `G`, device Blake2b, host CUDA/NVML, golden hashes, and packaging, for a smaller farm market Woody already abandoned in-tree. Keep `ComputeBackend` as the future seam; do not pretend it is one now.
-7. CPU remains a sidecar and a no-GPU `hashapi-cli`. Do not market it as an AMD miner.
+6. HIP is opt-in (`-DTREEMINER_GPU_BACKEND=HIP`). Do not change the default CUDA kernel, occupancy experiment, or live `treeminer.service`. The PTX `g()` stays NVIDIA-only; ROCm uses the C++ `g1()` form behind `TREEMINER_GPU_HIP`. Occupancy N>1 and precomputed refs stay default-off on both vendors.
+7. CPU remains a sidecar and a no-GPU `hashapi-cli`. Do not market the CPU path as an AMD miner.
 
 50-series is a **builder + CI** problem, not a kernel problem. 20-series is a **stop shipping detect-on-3060 zips** problem.
 
@@ -226,7 +226,7 @@ Each PR independently reviewable. Kernel diffs stay zero until H1.
 | **P5** | Structured log + pretty sink | new event type, `Logger`, `ConsoleLog`, TUI, contract tests | P0 | MINER_EXPERIENCE language. |
 | **P6** | Device finalize + double-buffer | `kernelrunner.cu`, `CudaHashBackend.cpp` | P3 | PLAN Phase 2. Golden-gated. |
 | **P7** | Occupancy / prefetch / per-arch autotune | kernel + `HashApiTuning` | P6 | PLAN Phase 3. Ledger every reject. |
-| **P8** | AMD/HIP (maybe) | new backend | P7 + market demand | Only after NVIDIA fat binary is the default download. |
+| **P8** | AMD/HIP | `GpuRuntime.h` + HIP CMake | landed, opt-in | Default binary stays CUDA. Do not enable HIP on the live NVIDIA box. |
 
 ---
 
@@ -235,7 +235,7 @@ Each PR independently reviewable. Kernel diffs stay zero until H1.
 1. **Pretty console is allowed to be brief; it is not allowed to be wrong.** Half-open and outage duration are product features, not decorations.
 2. **GPU first-blocks stays off until byte-level goldens pass.** Speed work that reintroduces 401s is a revenue bug, not an optimization.
 3. **Distribute a fat Linux binary; detect-on-build is a developer convenience.** 20-series and 50-series fail today for packaging reasons, not kernel reasons.
-4. **AMD is Phase 4+.** CPU sidecar is the honest answer for non-NVIDIA boxes until someone funds a HIP port.
+4. **AMD is opt-in HIP, not the default download.** NVIDIA fat binary stays the product; `-DTREEMINER_GPU_BACKEND=HIP` is the AMD farm path. CPU sidecar is still the no-GPU answer.
 5. **Dashboard is public operator telemetry on `0.0.0.0:42069`.** Hashrate, queues, and a truncated address are not treated as secrets. Vast.ai / Docker: map the port. Use `--dashboard-bind 127.0.0.1` only when you want it hidden.
 
 ---

@@ -126,6 +126,14 @@ const char* networkStateLabel(treeminer::CircuitBreaker::State state);
 
 bool isWithinXuniWindow();
 
+// GPU first-blocks (device-side Blake2b prehash), decided per device by the startup
+// self-test rather than by a build-time guess. The startup probe compares the device's
+// digest against the CPU reference and records the verdict here; MineUnit reads it when
+// building each batch request. Devices never probed fall back to the compile-time default
+// in hashapi::kGpuFirstBlocksEnabled.
+void setGpuFirstBlocksVerified(int deviceIndex, bool verified);
+bool gpuFirstBlocksVerified(int deviceIndex);
+
 struct gpuInfo
 {
 	int index;

@@ -4,8 +4,10 @@ This document provides instructions for building the project on both Linux and W
 
 ## Prerequisites
 
-- CMake installed on your system.
-- CUDA Toolkit installed on your system
+- CMake installed on your system (3.21+ for the AMD/ROCm backend).
+- A GPU toolchain for the vendor you are building for:
+  - NVIDIA: CUDA Toolkit (default backend).
+  - AMD: ROCm with HIP (`hipcc`), selected with `-DTREEMINER_GPU_BACKEND=HIP`.
 
 ## Building on Linux
 
@@ -86,6 +88,99 @@ Or override the architecture explicitly:
 cmake -S . -B build --preset ninja-multi-vcpkg -DCMAKE_CUDA_ARCHITECTURES=86
 cmake --build build --preset ninja-vcpkg-release
 ```
+
+## Building for AMD GPUs (ROCm)
+
+The miner has one kernel source that compiles either with `nvcc` (NVIDIA, the default) or
+with ROCm's HIP compiler (AMD). Nothing about the NVIDIA build changes — the AMD backend is
+opt-in through `-DTREEMINER_GPU_BACKEND=HIP` (`ROCm` is accepted as a synonym).
+
+Requirements: ROCm 5.7 or newer with the HIP runtime and, optionally, `rocm-smi` for the
+power/utilization gauges on the dashboard. The GPU must be one ROCm supports.
+
+```bash
+cd tree_miner/treeminer
+cmake -S . -B build-rocm -G Ninja \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DTREEMINER_GPU_BACKEND=HIP \
+  -DCMAKE_TOOLCHAIN_FILE="$HOME/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD/custom-triplets" \
+  -DVCPKG_TARGET_TRIPLET=x64-linux-static
+cmake --build build-rocm --parallel "$(nproc)"
+```
+
+The gfx target is detected from the installed ROCm tools (`amdgpu-arch`, falling back to
+`rocminfo`) and reported at configure time:
+
+```text
+-- TreeMiner HIP architectures: gfx1030
+```
+
+With no AMD GPU visible at configure time — CI, containers — the build falls back to a fat
+binary covering `gfx900 gfx906 gfx908 gfx90a gfx942 gfx1010 gfx1030 gfx1031 gfx1100 gfx1101
+gfx1102 gfx1200 gfx1201`. Override either case with `-DCMAKE_HIP_ARCHITECTURES=gfx1100`.
+
+Two presets wrap this:
+
+```bash
+cmake --preset rocm-release-linux-native   # detect the local card
+cmake --preset rocm-release-linux-fat      # every supported gfx target
+```
+
+### What differs from the NVIDIA build
+
+- **Warp width.** An Argon2 lane is 32 threads on both vendors. gfx9/CDNA wavefronts are 64
+  lanes wide, so every shuffle in the kernel is pinned to a 32-lane width explicitly
+  (`TM_SHFL` / `TM_SHFL_XOR` in `src/kernelrunner.cu`).
+- **The Argon2 G function.** NVIDIA uses a hand-written PTX block; PTX cannot be assembled by
+  the AMD compiler, so the ROCm build uses the equivalent C++ form (`g1()`).
+- **First blocks are decided per device.** `kGpuFirstBlocksEnabled` is the *default* only:
+  the startup self-test probes the GPU first-blocks path on each device and records the
+  verdict, so a device that matches the CPU reference uses it and one that does not keeps
+  first blocks on the CPU instead of being dropped. On ROCm the compile-time default is
+  `false` and the probe turns it on — verified on gfx1100 (RX 7900 XTX), where the probe
+  matches and the miner logs `enabling GPU first blocks for this device`.
+- **VRAM headroom.** ROCm does not fail an over-large device allocation, it satisfies it
+  from host (GTT) memory — so the pool allocates fine and every kernel then runs across
+  PCIe. Measured at difficulty 60000 on a 24 GiB gfx1100: batch 410 held 3.1 kH/s while
+  batch 415 collapsed to 0.5 kH/s. The batch estimator therefore reserves at least 1 GiB
+  or 1/16th of free VRAM on the HIP path, whichever is larger.
+- **Telemetry.** Power and utilization come from ROCm SMI instead of NVML. If the ROCm SMI
+  library is absent the miner still runs and those gauges simply report unavailable.
+
+Both backends run the same startup Argon2 CPU/GPU self-test and refuse to mine on a device
+whose digests do not match the CPU reference, so a bad toolchain fails closed at launch
+rather than submitting invalid blocks.
+
+### Building without vcpkg (Nix)
+
+`flake.nix` at the repo root provides a ROCm dev shell with the HIP toolchain and every
+library the miner links, so no vcpkg tree is needed:
+
+```sh
+nix develop
+cmake -S treeminer -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+  -DTREEMINER_GPU_BACKEND=HIP -DCMAKE_HIP_ARCHITECTURES=gfx1100 \
+  -DCMAKE_HIP_COMPILER=$ROCM_PATH/bin/amdclang++
+cmake --build build -j
+ctest --test-dir build
+```
+
+The CMake dependency lookups accept either source: vcpkg's `unofficial-*` exports when the
+vcpkg toolchain is in use, and the upstream CMake config or pkg-config files otherwise
+(argon2, SQLite, Crypto++, secp256k1).
+
+### Measured on an RX 7900 XTX (gfx1100, ROCm 7.2)
+
+```text
+GPU #0 Argon2 CPU/ROCm self-test passed.
+GPU #0 GPU-first-blocks probe matched the CPU reference; enabling GPU first blocks for this device.
+5.2 kH/s  •  1 GPU  •  diff 42069
+```
+
+`hash-benchmark` at difficulty 60000 with an auto-selected batch of 391: **3.29 kH/s**
+(3.37 kH/s at a hand-tuned batch of 380). `hash-one` digests match the CPU reference byte
+for byte on both the CPU- and GPU-first-blocks paths.
 
 ## Building on Windows
 

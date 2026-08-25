@@ -1,6 +1,6 @@
 #include "hashapi/WarpsPerBlockGolden.h"
 
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 
 #include <cstdint>
 #include <iostream>

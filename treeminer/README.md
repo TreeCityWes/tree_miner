@@ -157,7 +157,7 @@ XenblocksMiner/
 │   ├── run_mock_server.sh
 │   ├── demo.sh
 │   └── test_cpp_integration.sh
-├── src/                     # C++ miner core (CUDA)
+├── src/                     # C++ miner core (CUDA / ROCm)
 ├── doc/                     # Build instructions, API docs
 └── proto/                   # Protocol definitions
 ```

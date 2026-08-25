@@ -1,7 +1,7 @@
 #include "CudaBackend.h"
 #include "CudaException.h"
 #include "hashapi/OneshotLaunch.h"
-#include <cuda_runtime.h>
+#include "gpu/GpuRuntime.h"
 #include <cmath>
 
 CudaBackend::CudaBackend(int deviceIndex)

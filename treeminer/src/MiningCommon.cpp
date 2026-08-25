@@ -1,6 +1,9 @@
 #include "MiningCommon.h"
 
+#include "hashapi/HashApiTypes.h"
+
 #include <cstdint>
+#include <map>
 #include <ctime>
 #include <memory>
 #include <utility>
@@ -175,4 +178,25 @@ bool isWithinXuniWindow()
 	localtime_r(&now, &local);
 #endif
 	return local.tm_min < 5 || local.tm_min >= 55;
+}
+
+namespace {
+std::mutex gpuFirstBlocksMutex;
+std::map<int, bool> gpuFirstBlocksVerifiedByDevice;
+} // namespace
+
+void setGpuFirstBlocksVerified(int deviceIndex, bool verified)
+{
+    std::lock_guard<std::mutex> guard(gpuFirstBlocksMutex);
+    gpuFirstBlocksVerifiedByDevice[deviceIndex] = verified;
+}
+
+bool gpuFirstBlocksVerified(int deviceIndex)
+{
+    std::lock_guard<std::mutex> guard(gpuFirstBlocksMutex);
+    const auto entry = gpuFirstBlocksVerifiedByDevice.find(deviceIndex);
+    if (entry == gpuFirstBlocksVerifiedByDevice.end()) {
+        return hashapi::kGpuFirstBlocksEnabled;
+    }
+    return entry->second;
 }
