@@ -4,6 +4,7 @@ members = [
     "crates/treeminer-protocol",
     "crates/treeminer-journal",
     "crates/treeminer-submit",
+    "crates/treeminer-hash",
 ]
 
 [workspace.package]
@@ -13,4 +14,6 @@ version = "0.1.0"
 publish = false
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# `deny` (not `forbid`) so `treeminer-hash` can allow `unsafe` at the C ABI boundary only.
+# Other crates inherit deny and must not contain unsafe.
+unsafe_code = "deny"

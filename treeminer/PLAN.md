@@ -28,9 +28,10 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
   No rewrite of the kernel in another language; churn there risks the one component that already works.
 - **Host protocol (Rust, incremental):** `treeminer/rust/` — `treeminer-protocol` (classifier /
   PHC / margin / XUNI), `treeminer-journal` (SQLite WAL + `synchronous=FULL` + JSONL
-  fallback sink), and `treeminer-submit` (breaker / drain / `SubmissionManager`, Tokio one
-  worker). Later crates (Hash API FFI, orchestrator) replace remaining host C++ behind
-  the existing process. CUDA stays `nvcc`. The C++ journal remains the live miner path.
+  fallback sink), `treeminer-submit` (breaker / drain / `SubmissionManager`, Tokio one
+  worker), and `treeminer-hash` (C ABI around `hash-batch`; kernel stays `nvcc`). The
+  orchestrator crate replaces remaining host C++ behind the existing process. CUDA stays
+  `nvcc`. The C++ journal remains the live miner path.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a
   thin RAII class. WAL mode, `synchronous=FULL`.
 - **Build: CMake + vcpkg** (inherited; add one dependency line).

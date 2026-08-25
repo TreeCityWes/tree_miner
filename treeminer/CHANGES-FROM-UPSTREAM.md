@@ -137,8 +137,8 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.
 - **Rust host protocol crate** (`treeminer/rust/crates/treeminer-protocol`): 1:1 port of
   `ResponseClassifier`, `PhcAssembler` (unpadded PHC base64), `MarginPolicy`, and
-  `xuniWindowAt`. Zero GPU, `unsafe_code` forbidden. C++ miner is unchanged; later crates
-  (Hash API FFI, orchestrator) replace remaining host code behind the current process.
+  `xuniWindowAt`. Zero GPU, `unsafe_code` denied in protocol/journal/submit. C++ miner is
+  unchanged; the orchestrator crate replaces remaining host code behind the current process.
 - **Rust journal crate** (`treeminer/rust/crates/treeminer-journal`): 1:1 port of
   `FindJournal` + `FallbackSink`. Same schema, WAL + `synchronous=FULL`, journal-first
   COMMIT, JSONL fallback with fsync. 17 unit tests port the C++ journal suites. Not wired
@@ -148,3 +148,8 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   cpr/Crow). Tests drive `run_once` with injectable clocks; a Tokio current-thread worker
   hosts the drain loop. Same pending/acked/parked/dead state machine, lying-200
   confirmation, and fatal journal-error boundary. Not wired into `xenblocksMiner` yet.
+- **Rust hash crate** (`treeminer/rust/crates/treeminer-hash`): C ABI around Hash API
+  `hash-batch` (`src/hashapi/treeminer_hash.h`). Cargo tests link a C stub; production
+  `treeminer_hash.cpp` dispatches to `CpuHashBackend` / `CudaHashBackend` (kernel stays
+  `kernelrunner.cu`). Validation and matching ported 1:1. Not wired into `xenblocksMiner`
+  yet.

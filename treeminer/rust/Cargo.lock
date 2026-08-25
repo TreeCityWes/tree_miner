@@ -189,6 +189,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "treeminer-hash"
+version = "0.1.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "treeminer-journal"
 version = "0.1.0"
 dependencies = [
