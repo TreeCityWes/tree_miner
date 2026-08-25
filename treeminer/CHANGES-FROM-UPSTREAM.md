@@ -139,3 +139,7 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   `ResponseClassifier`, `PhcAssembler` (unpadded PHC base64), `MarginPolicy`, and
   `xuniWindowAt`. Zero GPU, `unsafe_code` forbidden. C++ miner is unchanged; later crates
   (`journal`, `submit`, Hash API FFI) replace host code behind the current process.
+- **Rust journal crate** (`treeminer/rust/crates/treeminer-journal`): 1:1 port of
+  `FindJournal` + `FallbackSink`. Same schema, WAL + `synchronous=FULL`, journal-first
+  COMMIT, JSONL fallback with fsync. 17 unit tests port the C++ journal suites. Not wired
+  into `xenblocksMiner` yet.
