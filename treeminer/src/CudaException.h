@@ -16,6 +16,7 @@ public:
     const char* what() const noexcept override {
         return message.c_str();
     }
+    cudaError_t code() const noexcept { return res; }
     static void check(cudaError_t res)
     {
         if (res != cudaSuccess) {

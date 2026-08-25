@@ -28,9 +28,9 @@ void printUsage()
 {
     std::cout
         << "Hash API commands:\n"
-        << "  xenblocksMiner hash-one --salt <hex> --key <64-hex> [--backend cpu|cuda] [--difficulty <n>] [--no-xuni] [--detailed-timings] [--first-block-workers <n>] [--first-block-dynamic-chunk-size <n>] [--first-block-dynamic-chunk-auto] [--gpu-first-blocks] [--warps-per-block <1-16>] [--json]\n"
-        << "  xenblocksMiner hash-batch --salt <hex> [--backend cpu|cuda] [--prefix <hex>] [--pattern XEN11] [--batch-size <n>] [--auto-batch-size] [--difficulty <n>] [--no-xuni] [--detailed-timings] [--first-block-workers <n>] [--first-block-dynamic-chunk-size <n>] [--first-block-dynamic-chunk-auto] [--gpu-first-blocks] [--warps-per-block <1-16>] [--json]\n"
-        << "  xenblocksMiner hash-benchmark --salt <hex> [--backend cpu|cuda] [--key <64-hex>] [--prefix <hex>] [--seconds <n>] [--batch-size <n>] [--auto-batch-size] [--batch-size-sequence <n,n,...>] [--difficulty <n>] [--difficulty-sequence <n,n,...>] [--no-xuni] [--detailed-timings] [--first-block-workers <n>] [--first-block-dynamic-chunk-size <n>] [--first-block-dynamic-chunk-auto] [--gpu-first-blocks] [--warps-per-block <1-16>] [--json]\n";
+        << "  xenblocksMiner hash-one --salt <hex> --key <64-hex> [--backend cpu|cuda] [--difficulty <n>] [--no-xuni] [--detailed-timings] [--first-block-workers <n>] [--first-block-dynamic-chunk-size <n>] [--first-block-dynamic-chunk-auto] [--gpu-first-blocks] [--warps-per-block <1-16>] [--precomputed-refs] [--json]\n"
+        << "  xenblocksMiner hash-batch --salt <hex> [--backend cpu|cuda] [--prefix <hex>] [--pattern XEN11] [--batch-size <n>] [--auto-batch-size] [--difficulty <n>] [--no-xuni] [--detailed-timings] [--first-block-workers <n>] [--first-block-dynamic-chunk-size <n>] [--first-block-dynamic-chunk-auto] [--gpu-first-blocks] [--warps-per-block <1-16>] [--precomputed-refs] [--json]\n"
+        << "  xenblocksMiner hash-benchmark --salt <hex> [--backend cpu|cuda] [--key <64-hex>] [--prefix <hex>] [--seconds <n>] [--batch-size <n>] [--auto-batch-size] [--batch-size-sequence <n,n,...>] [--difficulty <n>] [--difficulty-sequence <n,n,...>] [--no-xuni] [--detailed-timings] [--first-block-workers <n>] [--first-block-dynamic-chunk-size <n>] [--first-block-dynamic-chunk-auto] [--gpu-first-blocks] [--warps-per-block <1-16>] [--precomputed-refs] [--json]\n";
 }
 
 std::unordered_map<std::string, std::string> parseArgs(int argc, const char* const* argv)
@@ -44,7 +44,8 @@ std::unordered_map<std::string, std::string> parseArgs(int argc, const char* con
         if (key == "--json" || key == "--no-xuni" || key == "--detailed-timings" ||
             key == "--auto-batch-size" ||
             key == "--first-block-dynamic-chunk-auto" ||
-            key == "--gpu-first-blocks") {
+            key == "--gpu-first-blocks" ||
+            key == "--precomputed-refs") {
             args[key] = "true";
             continue;
         }
@@ -221,6 +222,7 @@ HashApiRequest baseRequest(const std::unordered_map<std::string, std::string>& a
     request.first_block_dynamic_chunk_auto = getArg(args, "--first-block-dynamic-chunk-auto") == "true";
     request.gpu_first_blocks = getArg(args, "--gpu-first-blocks") == "true";
     request.warps_per_block = getSizeArg(args, "--warps-per-block", 0);
+    request.precomputed_refs = getArg(args, "--precomputed-refs") == "true";
     return request;
 }
 
@@ -476,6 +478,7 @@ int runBenchmark(HashApiRequest request,
         aggregate.first_block_chunk_size = current.first_block_chunk_size;
         aggregate.gpu_first_blocks = current.gpu_first_blocks;
         aggregate.warps_per_block = current.warps_per_block;
+        aggregate.precomputed_refs = current.precomputed_refs;
         update_first_block_ranges(current);
         addTimings(aggregate.timings, current.timings);
         if (!request.key.empty()) {

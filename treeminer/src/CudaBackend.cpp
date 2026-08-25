@@ -84,6 +84,7 @@ void CudaBackend::run()
 {
 	if (runner_ != nullptr) {
 		runner_->setWarpsPerBlock(warpsPerBlock_);
+		runner_->setPrecomputedRefs(precomputedRefs_);
 		runner_->run();
 	}
 }
@@ -99,6 +100,11 @@ void CudaBackend::setWarpsPerBlock(std::uint32_t warps)
 		return;
 	}
 	warpsPerBlock_ = warps;
+}
+
+void CudaBackend::setPrecomputedRefs(bool enabled)
+{
+	precomputedRefs_ = enabled;
 }
 
 float CudaBackend::finish()

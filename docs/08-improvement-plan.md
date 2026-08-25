@@ -112,7 +112,7 @@ One stdout owner: in `--display terminal`, `ConsoleLog::event` enqueues into the
 Mining path (`MineUnit.cpp:117-123`):
 
 ```cpp
-request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled; // false
+request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled; // true on CUDA 13+
 ```
 
 Reproduced on this box: CPU reference and CUDA-with-CPU-first-blocks agree; CUDA-with-GPU-first-blocks diverges; the server correctly 401s `Hash verification failed`. The oneshot kernel is therefore trustworthy. The device prehash is not.
@@ -133,7 +133,7 @@ Have:
 
 Lack:
 
-- Self-test is **one key, `batch_size=1`, `m=8`**. A batched-only or first-blocks-only bug slips through (and first-blocks is off, so the guard does not currently police the known-bad path).
+- Self-test is **one key, `batch_size=1`, `m=8`**. A batched-only bug can still slip through. Committed CPU first-block 2 KiB goldens now exist so a GPU box can diff device blocks 0/1 without re-deriving the host reference. Mining uses GPU first-blocks (`kGpuFirstBlocksEnabled = true`); the startup self-test exercises that flag.
 - No committed golden vectors of host vs device first-block memory.
 - `docs/HASH_OPTIMIZATION_GOAL.md` still says mining uses “the validated GPU first-block path.” That sentence is **stale and dangerous**. Update it the same PR that documents the disable.
 
@@ -141,15 +141,15 @@ CPU sidecar (`--cpuWorkers`, default ceiling 100) is a correctness-friendly spar
 
 ### 3.3 Ranked hash work
 
-Do **not** touch occupancy / `cp.async` / `__launch_bounds__` until first-blocks is legal again. `__launch_bounds__` already burned a 10.7 → 5.9 kH/s regression in the ledger.
+Do **not** enable occupancy / `cp.async` / `__launch_bounds__` on the live unit without Nsight + golden hashes. `__launch_bounds__` already burned a 10.7 → 5.9 kH/s regression in the ledger. GPU first-blocks is **on** (CUDA 13).
 
 | Order | Work | Why |
 |---|---|---|
-| **H1** | Isolate GPU first-blocks: dump 2 KiB host vs device blocks 0/1 for a fixed `(salt, key, m)` set. Fix `device_blake2b` / `device_initial_hash`. Golden-vector test. Self-test **must** run once with `gpu_first_blocks=true` even while mining stays false. | Unlocks the largest known win without changing the oneshot kernel. |
-| **H2** | Re-enable `kGpuFirstBlocksEnabled` only after H1 vectors + startup self-test + a live 401-free canary. Keep a one-line kill switch. | Production speed. |
-| **H3** | Device-side finalize + hit-only DtoH (`docs/06` B.3 #4). ~4% and it deletes the CPU finalize thread. PLAN §10.10: needs the persistent hit-buffer model; upstream failed on output-buffer lifetime. | Phase 2, golden-gated. |
+| **H1** | Done: GPU first-blocks isolated; CUDA 13 matches CPU. Remaining: GPU box diffs device blocks 0/1 against committed host goldens in `tests/unit/hashapi/goldens/`. | Host vectors are GPU-free. |
+| **H2** | Done: `kGpuFirstBlocksEnabled = true` with startup self-test fail-closed. Keep the one-line kill switch. | Production speed. |
+| **H3** | Device-side finalize + hit-only DtoH (`docs/06` B.3 #4). Host `HostHitBuffer` ownership model is in tree (CPU goldens). Kernel not wired. ~4% and it deletes the CPU finalize thread. PLAN §10.10: needs the persistent hit-buffer model; upstream failed on output-buffer lifetime. | Phase 2, golden-gated. |
 | **H4** | Double-buffered streams per GPU (already have `--cudaStreams 1\|2`). Overlap batch B first-blocks/finalize with batch A oneshot. | Small, safer after H3. |
-| **H5** | Multi-warp flag is in tree (`--warpsPerBlock`, default 1). Next: Nsight occupancy dump + golden on a GPU box (`scripts/occupancy_canary.sh`), then precompute indexed-half refs + `cp.async` on sm80+. Per-arch autotune keyed on `(cc, m-band)`. | Phase 3. Honest +25–60%. Do not enable N>1 on the live unit until the canary is green. |
+| **H5** | Multi-warp flag is in tree (`--warpsPerBlock`, default 1). Indexed-half ref table is in tree (`--precomputedRefs`, default off) with CPU goldens. Next: Nsight occupancy dump + both goldens on a GPU box (`scripts/occupancy_canary.sh`), then `cp.async` on sm80+. Per-arch autotune keyed on `(cc, m-band)`. | Phase 3. Honest +25–60%. Do not enable N>1 or precomputed refs on the live unit until the canary is green. |
 
 Dead ends (do not reopen): `__launch_bounds__`, source-lane-only address selection, CPU hot-path rewrites, L1 carveout games, “1000%” as a near-term claim (`HASH_OPTIMIZATION_GOAL.md` aspirational 11× is a direction, not this quarter).
 
@@ -207,7 +207,7 @@ Detect-on-this-3060 is why a TreeMiner zip from this host will not boot a 2080. 
 - Commit another logging rewrite that drops `outage_ms` / margin / `pool DOWN`.
 - Multi-warp or `__launch_bounds__` without Nsight + golden hashes.
 - Promise AMD or “1000% faster” in a release note.
-- Treat `HASH_OPTIMIZATION_GOAL.md` as current mining policy while first-blocks is off.
+- Treat `HASH_OPTIMIZATION_GOAL.md` Current Control Summary as mining policy; the ledger below it is historical.
 - Push these two local commits (`fd46dd2`, `4034ea1`) until this plan’s H1/logging-hotfix priority is agreed — they are already the right base, just unpushed.
 
 ---

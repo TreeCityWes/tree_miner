@@ -20,6 +20,7 @@ class HashRequestBase(BaseModel):
     allow_xuni: bool = True
     gpu_first_blocks: bool = False
     warps_per_block: int = 0
+    precomputed_refs: bool = False
 
 
 class HashOneRequest(HashRequestBase):

@@ -121,6 +121,7 @@ hashapi::HashApiResult MineUnit::batchCompute(std::string salt, std::string keyP
 	// so the toggle lives in one place (HashApiTypes.h) and can never silently diverge.
 	request.gpu_first_blocks = hashapi::kGpuFirstBlocksEnabled;
 	request.warps_per_block = globalWarpsPerBlock;
+	request.precomputed_refs = globalPrecomputedRefs;
 	return hashBackend_.runBatch(request);
 }
 

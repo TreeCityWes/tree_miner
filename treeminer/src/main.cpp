@@ -17,6 +17,7 @@
 #include "MiningCommon.h"
 #include "CudaDevice.h"
 #include "CudaBackend.h"
+#include "CudaException.h"
 #include "CpuMiningWorker.h"
 #include "MineUnit.h"
 #include "AppConfig.h"
@@ -48,6 +49,7 @@
 #include "hashapi/CudaHashBackend.h"
 #include "hashapi/OneshotLaunch.h"
 #include "hashapi/WarpsPerBlockGolden.h"
+#include "hashapi/CudaSkip.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -257,6 +259,7 @@ int main(int argc, const char *const *argv)
             ("journalPath", po::value<std::string>(), "find journal database file (default: treeminer-journal.db in the working directory)")
             ("cudaStreams", po::value<int>(), "independent CUDA work streams per device (1-2)")
             ("warpsPerBlock", po::value<int>(), "hashes packed per CUDA block (1 default; 2-16 occupancy experiment, requires golden match)")
+            ("precomputedRefs", "use precomputed indexed-half ref table (default off; GPU golden required before live use)")
             ("cpuWorkers", po::value<int>(), "independent CPU sidecar mining workers (0 disables)")
             ("cpuMaxDifficulty", po::value<int>(), "CPU workers hash only while difficulty <= this ceiling; they idle above it and resume when it falls (default 100; 0 = no ceiling)")
             ("dashboard-bind", po::value<std::string>(), "dashboard listen IP (default: 0.0.0.0 for Vast.ai/Docker/LAN; 127.0.0.1 for this machine only)")
@@ -437,6 +440,12 @@ int main(int argc, const char *const *argv)
                 std::cout << " (occupancy experiment; live default is 1)";
             }
             std::cout << std::endl;
+        }
+
+        if (vm.count("precomputedRefs")) {
+            globalPrecomputedRefs = true;
+            std::cout << "CUDA precomputed indexed-half refs: on (experiment; live default is off)"
+                      << std::endl;
         }
 
         if (vm.count("cpuWorkers")) {
@@ -658,6 +667,15 @@ int main(int argc, const char *const *argv)
                     }
                 }
                 miningDevices.insert(deviceIndex);
+            } catch (const CudaException& cudaError) {
+                if (hashapi::shouldSkipDevice(static_cast<int>(cudaError.code()))) {
+                    std::cerr << "WARN: " << hashapi::skipDeviceLog(deviceIndex, static_cast<int>(cudaError.code()))
+                              << std::endl;
+                } else {
+                    std::cerr << "WARN: GPU #" << deviceIndex
+                              << " could not run the startup self-test (" << cudaError.what()
+                              << ") — skipping this device." << std::endl;
+                }
             } catch (const std::exception& deviceError) {
                 std::cerr << "WARN: GPU #" << deviceIndex
                           << " could not run the startup self-test (" << deviceError.what()

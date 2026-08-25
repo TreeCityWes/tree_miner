@@ -36,6 +36,7 @@ struct HashApiRequest {
     bool first_block_dynamic_chunk_auto = false;
     bool gpu_first_blocks = false;
     std::size_t warps_per_block = 0; // 0 → default 1; >1 packs hashes per CUDA block
+    bool precomputed_refs = false;   // indexed-half ref table; default off
 };
 
 struct HashApiMatch {
@@ -99,6 +100,7 @@ struct HashApiResult {
     std::size_t first_block_chunk_size_max = 0;
     bool gpu_first_blocks = false;
     std::size_t warps_per_block = 1;
+    bool precomputed_refs = false;
     double elapsed_ms = 0.0;
     double hashrate = 0.0;
     HashApiTimings timings;

@@ -124,5 +124,7 @@ class HashCliClient:
         warps_per_block = int(payload.get("warps_per_block", 0) or 0)
         if warps_per_block > 0:
             args.extend(["--warps-per-block", str(warps_per_block)])
+        if payload.get("precomputed_refs") is True:
+            args.append("--precomputed-refs")
 
         return args

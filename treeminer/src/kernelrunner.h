@@ -35,17 +35,21 @@ private:
     std::unique_ptr<uint8_t[]> blocksIn;
     std::unique_ptr<uint8_t[]> blocksOut;
     std::uint32_t warpsPerBlock;
+    bool precomputedRefs;
+    std::uint32_t refsSegmentBlocks;
 
     void copyInputBlocks();
     void copyOutputBlocks();
 
     void runDeviceFirstBlockKernel();
     void runKernelOneshot();
+    void ensurePrecomputedRefs();
 
 public:
 
     std::size_t getBatchSize() const { return batchSize; }
     void setWarpsPerBlock(std::uint32_t warps);
+    void setPrecomputedRefs(bool enabled);
 
     KernelRunner(uint32_t type, uint32_t version,
         uint32_t passes, uint32_t lanes,

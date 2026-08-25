@@ -55,8 +55,9 @@ Core files:
 - `first_block_workers`: optional CUDA first-block worker-thread cap. `0` keeps automatic worker-count behavior.
 - `first_block_dynamic_chunk_size`: optional CUDA first-block dynamic scheduling chunk size. `0` keeps the default static chunking behavior; nonzero values are for benchmark-only scheduler experiments.
 - `first_block_dynamic_chunk_auto`: optional CUDA first-block dynamic scheduling policy. `false` preserves explicit static or manual chunk behavior; `true` lets the CUDA backend choose a benchmark-informed dynamic chunk size for supported generated-key scenarios.
-- `gpu_first_blocks`: optional CUDA-only experiment flag. `false` preserves the default host-prepared first blocks. `true` asks the CUDA backend to generate the Argon2 initial two blocks on the device for supported `t=1`, single-lane generated-key or fixed-key requests.
+- `gpu_first_blocks`: CUDA first-block kernel. Mining uses `kGpuFirstBlocksEnabled = true` (CUDA 13+; nvcc 11.5 miscompiled this path). `false` keeps host-prepared first blocks.
 - `warps_per_block`: optional CUDA occupancy experiment. `0` (default) and `1` keep the Woody launch: one hash per CUDA block, one warp, 1 KiB shared. Values `2`–`16` pack that many independent hashes into one block. Live mining stays at 1 until a golden + Nsight canary says otherwise.
+- `precomputed_refs`: optional CUDA indexed-half ref table. `false` (default) keeps `next_addresses1` in the oneshot kernel. `true` uploads a host-generated ref-index table (identical for every job at fixed difficulty) and launches `argon2_kernel_oneshot_precomputed`. Live mining stays off until a GPU golden matches.
 
 ### Result
 
@@ -80,6 +81,7 @@ Core files:
 - `first_block_chunk_size_max`
 - `gpu_first_blocks`
 - `warps_per_block`
+- `precomputed_refs`
 - `elapsed_ms`
 - `hashrate`
 - `timings`
@@ -116,6 +118,7 @@ Each match includes:
 - `gpu_first_blocks` requires `backend=cuda`
 - `warps_per_block` greater than 1 requires `backend=cuda`
 - `warps_per_block` cannot exceed 16
+- `precomputed_refs` requires `backend=cuda`
 
 ## CLI
 

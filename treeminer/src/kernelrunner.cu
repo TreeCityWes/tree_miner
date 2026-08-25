@@ -13,6 +13,7 @@
 
 #include "CudaException.h"
 #include "hashapi/OneshotLaunch.h"
+#include "hashapi/IndexedRefTable.h"
 
 #define ARGON2_D  0
 #define ARGON2_I  1
@@ -880,6 +881,61 @@ __global__ void argon2_kernel_oneshot(
     mem_curr = mem_lane;
 }
 
+__global__ void argon2_kernel_oneshot_precomputed(
+        struct block_g * __restrict__ memory,
+        uint32_t segment_blocks,
+        uint32_t batch_size,
+        uint32_t warps_per_block,
+        const uint32_t * __restrict__ indexed_refs)
+{
+    extern __shared__ struct block_l shared[];
+
+    const uint32_t warp = threadIdx.x / THREADS_PER_LANE;
+    const uint32_t thread = threadIdx.x % THREADS_PER_LANE;
+    const uint32_t job_id = blockIdx.x * warps_per_block + warp;
+    if (job_id >= batch_size) {
+        return;
+    }
+
+    uint32_t lane_blocks = ARGON2_SYNC_POINTS * segment_blocks;
+
+    memory += (size_t)job_id * lane_blocks;
+
+    struct block_th prev;
+    struct block_l* tmp = &shared[warp];
+
+    struct block_g *mem_lane = memory;
+    struct block_g *mem_prev = mem_lane + 1;
+    struct block_g *mem_curr = mem_lane + 2;
+
+    load_block(&prev, mem_prev, thread);
+
+    for (uint32_t offset = 2; offset < segment_blocks; ++offset) {
+        const uint32_t ref_index = indexed_refs[offset - 2];
+        argon2_core(memory, mem_curr, &prev, tmp, thread, ref_index);
+        mem_curr++;
+    }
+
+    const uint32_t slice1_base = segment_blocks - 2;
+    for (uint32_t offset = 0; offset < segment_blocks; ++offset) {
+        const uint32_t ref_index = indexed_refs[slice1_base + offset];
+        argon2_core(memory, mem_curr, &prev, tmp, thread, ref_index);
+        mem_curr++;
+    }
+
+    for (uint32_t slice = 2; slice < ARGON2_SYNC_POINTS; ++slice) {
+        for (uint32_t offset = 0; offset < segment_blocks; ++offset) {
+            argon2_step_dependent(
+                        memory, mem_curr, &prev, tmp,
+                        segment_blocks, thread,
+                        slice, offset);
+
+            mem_curr ++;
+        }
+    }
+    mem_curr = mem_lane;
+}
+
 __global__ void argon2_first_blocks_kernel(
         struct block_g* __restrict__ memory,
         const uint8_t* __restrict__ keys,
@@ -930,7 +986,8 @@ KernelRunner::KernelRunner(uint32_t type, uint32_t version, uint32_t passes,
           deviceFirstBlockVersion(0), deviceFirstBlockType(0),
           deviceFirstBlockLanes(0), lastUsedDeviceFirstBlocks(false),
           start(), end(), copyStart(), copyEnd(), firstBlockStart(), firstBlockEnd(), kernelStart(), kernelEnd(),
-          blocksIn(nullptr), blocksOut(nullptr), warpsPerBlock(hashapi::kDefaultWarpsPerBlock)
+          blocksIn(nullptr), blocksOut(nullptr), warpsPerBlock(hashapi::kDefaultWarpsPerBlock),
+          precomputedRefs(false), refsSegmentBlocks(0)
 {
 
 }
@@ -946,6 +1003,34 @@ void KernelRunner::setWarpsPerBlock(std::uint32_t warps)
         return;
     }
     warpsPerBlock = warps;
+}
+
+void KernelRunner::setPrecomputedRefs(bool enabled)
+{
+    precomputedRefs = enabled;
+}
+
+void KernelRunner::ensurePrecomputedRefs()
+{
+    if (!precomputedRefs) {
+        return;
+    }
+    if (refs != nullptr && refsSegmentBlocks == segmentBlocks) {
+        return;
+    }
+    if (refs != nullptr) {
+        CudaException::check(cudaFree(refs));
+        refs = nullptr;
+        refsSegmentBlocks = 0;
+    }
+    const auto table = hashapi::generateIndexedRefTable(segmentBlocks);
+    if (table.empty()) {
+        return;
+    }
+    const std::size_t bytes = table.size() * sizeof(std::uint32_t);
+    CudaException::check(cudaMalloc(&refs, bytes));
+    CudaException::check(cudaMemcpyAsync(refs, table.data(), bytes, cudaMemcpyHostToDevice, stream));
+    refsSegmentBlocks = segmentBlocks;
 }
 
 void KernelRunner::init(std::size_t batchSize_){
@@ -995,6 +1080,7 @@ void KernelRunner::reconfigure(uint32_t type_, uint32_t version_,
     batchSize = batchSize_;
     deviceFirstBlocksReady = false;
     lastUsedDeviceFirstBlocks = false;
+    refsSegmentBlocks = 0;
 }
 
 KernelRunner::~KernelRunner()
@@ -1183,6 +1269,15 @@ void KernelRunner::runKernelOneshot()
                   "OneshotLaunch lane width must match the kernel");
     struct block_g *memory_blocks = (struct block_g *)memory;
     const auto launch = hashapi::makeOneshotLaunch(batchSize, warpsPerBlock);
+    if (precomputedRefs && refs != nullptr) {
+        argon2_kernel_oneshot_precomputed
+                <<<dim3(launch.grid), dim3(launch.threads), launch.shared_bytes, stream>>>(
+                    memory_blocks, segmentBlocks,
+                    static_cast<uint32_t>(batchSize),
+                    launch.warps_per_block,
+                    static_cast<const uint32_t*>(refs));
+        return;
+    }
     argon2_kernel_oneshot
             <<<dim3(launch.grid), dim3(launch.threads), launch.shared_bytes, stream>>>(
                 memory_blocks, segmentBlocks,
@@ -1213,6 +1308,7 @@ void KernelRunner::run()
 
     CudaException::check(cudaEventRecord(kernelStart, stream));
     
+    ensurePrecomputedRefs();
     runKernelOneshot();
 
     CudaException::check(cudaGetLastError());

@@ -100,6 +100,7 @@ extern std::string globalRpcLink;
 extern std::size_t globalMaxBatchSize;
 extern std::size_t globalCudaStreamsPerDevice;
 extern std::size_t globalWarpsPerBlock;
+extern bool globalPrecomputedRefs;
 
 enum class LastSubmissionState {
 	None,

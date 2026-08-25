@@ -46,11 +46,15 @@ Current confirmed architecture state:
 - The current automation surface is the CLI Hash API: `hash-one`, `hash-batch`,
   and `hash-benchmark`. This is not a hosted HTTP API, websocket API, frontend
   API, marketplace API, wallet flow, or full platform API.
-- Miner-generated CUDA requests currently use **CPU first-blocks**
-  (`kGpuFirstBlocksEnabled = false`). The device first-block kernel produces
-  invalid Argon2 digests on the live work shape; do not treat GPU first-blocks
-  as the mining path until a CPU/CUDA known-vector gate passes. The automatic
-  first-block chunk policy still applies to the host prehash.
+- Miner-generated CUDA requests currently use **GPU first-blocks**
+  (`kGpuFirstBlocksEnabled = true`). That path is legal on CUDA 13+; nvcc 11.5
+  miscompiled `argon2_first_blocks_kernel` (wrong digests, server 401s). The
+  startup CPU/CUDA self-test exercises this flag and refuses to mine on mismatch.
+  Host first-block goldens live in `tests/unit/hashapi/goldens/` so a GPU box can
+  diff device blocks 0/1 without re-deriving the CPU reference.
+- Multi-warp occupancy (`--warpsPerBlock`, default 1) and precomputed indexed-half
+  refs (`--precomputedRefs`, default off) are in tree behind flags. Do not enable
+  either on the live unit until the GPU canary is green.
 - The real optimization workload is high-memory `m=diff` in the thousands to
   tens of thousands. Existing d1, d8, and d64 reports are useful for smoke,
   continuity, and regression triage, but they are not representative completion

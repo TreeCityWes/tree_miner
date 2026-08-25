@@ -128,6 +128,10 @@ std::vector<std::string> validateRequest(const HashApiRequest& request)
         errors.push_back("warps_per_block > 1 requires backend=cuda");
     }
 
+    if (request.precomputed_refs && request.backend != "cuda") {
+        errors.push_back("precomputed_refs requires backend=cuda");
+    }
+
     return errors;
 }
 

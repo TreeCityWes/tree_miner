@@ -1,5 +1,7 @@
 #include "CudaDevice.h"
+#include "hashapi/CudaSkip.h"
 #include <stdexcept>
+#include <cstddef>
 #include <cuda_runtime.h>
 #include <sstream>
 #include <cmath>
@@ -38,9 +40,16 @@ std::vector<CudaDevice> CudaDevice::getAllDevices() {
     CudaException::check(cudaGetDeviceCount(&count));
 
     std::vector<CudaDevice> devices;
-    devices.reserve(count);
+    devices.reserve(static_cast<std::size_t>(count));
     for (int i = 0; i < count; i++) {
-        devices.emplace_back(i);
+        try {
+            devices.emplace_back(i);
+        } catch (const CudaException& error) {
+            if (hashapi::shouldSkipDevice(static_cast<int>(error.code()))) {
+                continue;
+            }
+            throw;
+        }
     }
     return devices;
 }

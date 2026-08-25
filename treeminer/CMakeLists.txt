@@ -81,19 +81,32 @@ if(XENBLOCKS_BUILD_MINER)
         set(CMAKE_CUDA_ARCHITECTURES "${_xenblocks_cuda_architectures}" CACHE STRING "CUDA architectures" FORCE)
     endif()
 
+    if(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 12.8)
+        set(_treeminer_cuda_max_arch 120)
+    elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.8)
+        set(_treeminer_cuda_max_arch 90)
+    elseif(CMAKE_CUDA_COMPILER_VERSION VERSION_GREATER_EQUAL 11.0)
+        set(_treeminer_cuda_max_arch 86)
+    else()
+        set(_treeminer_cuda_max_arch 75)
+    endif()
+
     set(_xenblocks_adjusted_architectures "")
     foreach(_xenblocks_cuda_arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
-        if(_xenblocks_cuda_arch MATCHES "^120(-real|-virtual)?$" AND
-           CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 12.8)
+        set(_treeminer_arch_num 0)
+        if(_xenblocks_cuda_arch MATCHES "^([0-9]+)")
+            set(_treeminer_arch_num "${CMAKE_MATCH_1}")
+        endif()
+        if(_treeminer_arch_num GREATER _treeminer_cuda_max_arch)
             if(XENBLOCKS_CUDA_ARCHITECTURES_EXPLICIT)
                 message(FATAL_ERROR
-                    "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8 or newer; "
-                    "detected CUDA ${CMAKE_CUDA_COMPILER_VERSION}.")
+                    "sm_${_treeminer_arch_num} requires a newer CUDA Toolkit "
+                    "(this nvcc is ${CMAKE_CUDA_COMPILER_VERSION}, max native sm_${_treeminer_cuda_max_arch}).")
             endif()
             message(WARNING
-                "nvidia-smi reported sm_120 but toolkit ${CMAKE_CUDA_COMPILER_VERSION} "
-                "cannot emit Blackwell SASS; falling back to sm_90 PTX")
-            list(APPEND _xenblocks_adjusted_architectures "90")
+                "nvidia-smi reported sm_${_treeminer_arch_num} but toolkit ${CMAKE_CUDA_COMPILER_VERSION} "
+                "cannot emit that SASS; falling back to sm_${_treeminer_cuda_max_arch} PTX")
+            list(APPEND _xenblocks_adjusted_architectures "${_treeminer_cuda_max_arch}")
         else()
             list(APPEND _xenblocks_adjusted_architectures "${_xenblocks_cuda_arch}")
         endif()
@@ -248,6 +261,7 @@ set(SOURCE_FILES
     src/hashapi/HashApiSelfTest.cpp
     src/hashapi/HashApiTuning.cpp
     src/hashapi/HashApiValidation.cpp
+    src/hashapi/IndexedRefTable.cpp
     src/hashapi/WarpsPerBlockGolden.cpp
 )
 set(HASHAPI_SOURCE_FILES
@@ -343,6 +357,7 @@ if(XENBLOCKS_BUILD_MINER AND TREEMINER_BUILD_TESTS)
     add_executable(treeminer_warps_golden
         tests/cpp/warps_per_block_golden.cpp
         src/hashapi/WarpsPerBlockGolden.cpp
+        src/hashapi/IndexedRefTable.cpp
         src/argon2params.cpp
         src/blake2b.cpp
         src/kernelrunner.cu

@@ -64,6 +64,9 @@ public:
 
 	// Occupancy experiment: hashes packed per CUDA block. Default 1 (Woody shape).
 	virtual void setWarpsPerBlock(std::uint32_t warps) { (void)warps; }
+
+	// Indexed-half precomputed ref table. Default off (Woody next_addresses1).
+	virtual void setPrecomputedRefs(bool enabled) { (void)enabled; }
 };
 
 // Enumerate all available compute devices for the compiled backend.

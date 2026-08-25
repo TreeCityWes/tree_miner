@@ -186,6 +186,9 @@ All optional; defaults reproduce safe behavior. Existing Woody config keys uncha
   `warps_per_block` / `--warpsPerBlock` is in tree, **default 1** (live shape unchanged).
   Values 2–16 are fail-closed behind `runWarpsPerBlockGolden` and need an Nsight dump
   (`scripts/occupancy_canary.sh`) before production.
+  Precomputed indexed-half refs (`--precomputedRefs` / `precomputed_refs`) are in tree,
+  **default off**. Host table + CPU goldens are GPU-free; the separate
+  `argon2_kernel_oneshot_precomputed` kernel stays unused until a GPU golden matches.
 
 ## 8. Risks (carried from docs/05 §6)
 

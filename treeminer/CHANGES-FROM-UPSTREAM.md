@@ -139,4 +139,10 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   Default remains Woody's one-warp-per-block launch. N>1 is fail-closed at startup via
   `runWarpsPerBlockGolden` (same first-blocks, warps=1 vs N must match). Do not enable on
   the live `treeminer.service` until `scripts/occupancy_canary.sh` is green on that box.
+- **GPU-free kernel enablers:** host-generated indexed-half ref table
+  (`--precomputedRefs`, default off; separate `argon2_kernel_oneshot_precomputed` kernel),
+  committed CPU first-block 2 KiB goldens (`tests/unit/hashapi/goldens/`), skip-bad-GPU
+  (`cudaErrorNoKernelImageForDevice` skips that card instead of killing the process),
+  toolkit PTX fallback when local CC exceeds nvcc max, and a host hit-buffer ownership
+  model for device-side finalize (`HostHitBuffer` — not wired into the kernel yet).
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.

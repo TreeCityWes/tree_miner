@@ -93,4 +93,7 @@ def validate_hash_payload(payload: dict[str, Any], require_key: bool = False) ->
     if warps_per_block > 1 and backend != "cuda":
         errors.append("warps_per_block > 1 requires backend=cuda")
 
+    if payload.get("precomputed_refs") and backend != "cuda":
+        errors.append("precomputed_refs requires backend=cuda")
+
     return errors

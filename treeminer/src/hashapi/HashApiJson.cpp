@@ -116,6 +116,7 @@ std::string toJson(const HashApiResult& result)
         << "\"first_block_chunk_size_max\":" << result.first_block_chunk_size_max << ","
         << "\"gpu_first_blocks\":" << boolText(result.gpu_first_blocks) << ","
         << "\"warps_per_block\":" << result.warps_per_block << ","
+        << "\"precomputed_refs\":" << boolText(result.precomputed_refs) << ","
         << "\"elapsed_ms\":" << result.elapsed_ms << ","
         << "\"hashrate\":" << result.hashrate << ","
         << "\"timings\":" << toJson(result.timings) << ","

@@ -133,6 +133,16 @@ def test_parse_scenario_supports_warps_per_block_flag():
     assert command[command.index("--warps-per-block") + 1] == "4"
 
 
+def test_parse_scenario_supports_precomputed_refs_flag():
+    scenario = benchmark.parse_scenario(
+        "backend=cuda,difficulty=8,batch_size=64,seconds=3,precomputed_refs=true",
+    )
+
+    assert scenario.precomputed_refs is True
+    command = benchmark.build_hash_command(Path("miner"), benchmark.DEFAULT_SALT, scenario)
+    assert "--precomputed-refs" in command
+
+
 def test_parse_scenario_supports_auto_batch_size_flag():
     scenario = benchmark.parse_scenario(
         "backend=cuda,difficulty=8,batch_size=0,seconds=3,auto_batch_size=true",
@@ -1219,6 +1229,7 @@ def test_build_recommendations_selects_best_batch_per_difficulty():
             "first_block_chunk_size_max": 32,
             "gpu_first_blocks": False,
             "warps_per_block": 0,
+            "precomputed_refs": False,
             "median_hashrate": 150.0,
             "min_hashrate": 150.0,
             "max_hashrate": 150.0,
@@ -1249,6 +1260,7 @@ def test_build_recommendations_selects_best_batch_per_difficulty():
             "first_block_chunk_size_max": 0,
             "gpu_first_blocks": False,
             "warps_per_block": 0,
+            "precomputed_refs": False,
             "median_hashrate": 120.0,
             "min_hashrate": 120.0,
             "max_hashrate": 120.0,

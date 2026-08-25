@@ -42,6 +42,7 @@ def test_hash_api_request_fields_exist():
         "first_block_dynamic_chunk_auto",
         "gpu_first_blocks",
         "warps_per_block",
+        "precomputed_refs",
     ]:
         assert field in content
 
@@ -61,6 +62,7 @@ def test_hash_api_validation_rules_are_implemented():
         "gpu_first_blocks requires backend=cuda",
         "warps_per_block > 1 requires backend=cuda",
         "warps_per_block exceeds maximum of 16",
+        "precomputed_refs requires backend=cuda",
     ]:
         assert rule in content
 
@@ -120,7 +122,8 @@ def test_cuda_release_benchmark_presets_exist():
 
     cmake = read("CMakeLists.txt")
     assert "VERSION_GREATER_EQUAL 12.8" in cmake
-    assert "sm_120 (GeForce RTX 50 series) requires CUDA Toolkit 12.8" in cmake
+    assert "_treeminer_cuda_max_arch" in cmake
+    assert "cannot emit that SASS; falling back to sm_" in cmake
 
 
 def test_terminal_status_reports_submission_outcomes_without_journal_io():
@@ -292,6 +295,34 @@ def test_hash_api_exposes_warps_per_block_occupancy_experiment():
     assert "kMaxWarpsPerBlock = 16" in launch
 
 
+def test_hash_api_exposes_precomputed_indexed_refs_experiment():
+    types = read("src/hashapi/HashApiTypes.h")
+    json_impl = read("src/hashapi/HashApiJson.cpp")
+    cli_impl = read("src/hashapi/HashApiCli.cpp")
+    compute = read("src/ComputeBackend.h")
+    cuda = read("src/hashapi/CudaHashBackend.cpp")
+    runner = read("src/kernelrunner.cu")
+    table = read("src/hashapi/IndexedRefTable.h")
+
+    assert "bool precomputed_refs = false" in types
+    assert "precomputed_refs" in json_impl
+    assert "--precomputed-refs" in cli_impl
+    assert "setPrecomputedRefs" in compute
+    assert "setPrecomputedRefs" in cuda
+    assert "argon2_kernel_oneshot_precomputed" in runner
+    assert "kDefaultPrecomputedRefs = false" in table
+
+
+def test_live_miner_precomputed_refs_defaults_off():
+    main = read("src/main.cpp")
+    mine_unit = read("src/MineUnit.cpp")
+    common = read("src/MiningCommon.h")
+
+    assert '("precomputedRefs"' in main
+    assert "request.precomputed_refs = globalPrecomputedRefs" in mine_unit
+    assert "extern bool globalPrecomputedRefs" in common
+
+
 def test_hash_api_result_exposes_batch_size_range_metadata():
     types = read("src/hashapi/HashApiTypes.h")
     json_impl = read("src/hashapi/HashApiJson.cpp")
@@ -325,6 +356,18 @@ def test_live_miner_warps_per_block_defaults_to_one_and_is_fail_closed():
     assert "extern std::size_t globalWarpsPerBlock" in common
     assert "kDefaultWarpsPerBlock = 1" in launch
     assert "kMaxWarpsPerBlock = 16" in launch
+
+
+def test_skip_bad_gpu_does_not_kill_the_process():
+    skip = read("src/hashapi/CudaSkip.h")
+    device = read("src/CudaDevice.cpp")
+    main = read("src/main.cpp")
+    cmake = read("CMakeLists.txt")
+
+    assert "kCudaErrorNoKernelImageForDevice = 209" in skip
+    assert "shouldSkipDevice" in device
+    assert "skipDeviceLog" in main
+    assert "_treeminer_cuda_max_arch" in cmake
 
 
 def test_hash_api_base64_encoder_avoids_incremental_string_appends():
