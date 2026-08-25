@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/treeminer-protocol", "crates/treeminer-journal"]
+members = [
+    "crates/treeminer-protocol",
+    "crates/treeminer-journal",
+    "crates/treeminer-submit",
+]
 
 [workspace.package]
 edition = "2021"

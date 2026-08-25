@@ -27,8 +27,9 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
 - **Core miner: C++17 + CUDA** — inherited from the fork; the kernel is proven and MIT-clean.
   No rewrite of the kernel in another language; churn there risks the one component that already works.
 - **Host protocol (Rust, incremental):** `treeminer/rust/` — `treeminer-protocol` (classifier /
-  PHC / margin / XUNI) and `treeminer-journal` (SQLite WAL + `synchronous=FULL` + JSONL
-  fallback sink). Later crates (submit, Hash API FFI, orchestrator) replace host C++ behind
+  PHC / margin / XUNI), `treeminer-journal` (SQLite WAL + `synchronous=FULL` + JSONL
+  fallback sink), and `treeminer-submit` (breaker / drain / `SubmissionManager`, Tokio one
+  worker). Later crates (Hash API FFI, orchestrator) replace remaining host C++ behind
   the existing process. CUDA stays `nvcc`. The C++ journal remains the live miner path.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a
   thin RAII class. WAL mode, `synchronous=FULL`.

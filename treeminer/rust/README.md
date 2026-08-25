@@ -7,8 +7,8 @@ until the Hash API FFI crate exists. Each crate is replaceable behind the curren
 |---|---|---|
 | `treeminer-protocol` | done | `ResponseClassifier`, `PhcAssembler`, `MarginPolicy`, `xuniWindowAt` |
 | `treeminer-journal` | done | `FindJournal` + `FallbackSink` (WAL + `synchronous=FULL`) |
-| `treeminer-submit` | next | `SubmissionManager` / breaker / drain |
-| `treeminer-hash` (FFI) | pending | Hash API `hash-batch`; kernel still `nvcc` |
+| `treeminer-submit` | done | `SubmissionManager` / breaker / drain (Tokio one worker) |
+| `treeminer-hash` (FFI) | next | Hash API `hash-batch`; kernel still `nvcc` |
 | orchestrator | last | replace `main.cpp` |
 
 ```sh

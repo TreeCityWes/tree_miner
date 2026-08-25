@@ -1,0 +1,15 @@
+[package]
+name = "treeminer-submit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Journal drain: circuit breaker, scheduler, submission state machine."
+
+[dependencies]
+tokio = { version = "1", features = ["rt", "time", "macros", "sync"] }
+treeminer-journal = { path = "../treeminer-journal" }
+treeminer-protocol = { path = "../treeminer-protocol" }
+
+[lints]
+workspace = true
