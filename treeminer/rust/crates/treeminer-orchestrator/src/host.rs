@@ -82,6 +82,51 @@ pub fn build_payload(input: &CaptureInput, now_ms: i64) -> Result<FoundPayload, 
     })
 }
 
+/// Capture a Hash API match. Full `$argon2id$` strings are used as-is (CpuHashBackend).
+/// Bare digests are PHC-assembled (MineUnit path). Other encoded forms (the Cargo stub)
+/// are persisted as-is so we do not wrap them into an oversized PHC.
+pub fn build_payload_from_hash(
+    hexsalt: &str,
+    key: &str,
+    hash: &str,
+    memory_cost: u32,
+    attempts: u64,
+    hashes_per_second: f64,
+    worker: &str,
+    now_ms: i64,
+) -> Result<FoundPayload, CaptureError> {
+    if hash.starts_with("$argon2id$") || hash.contains('$') {
+        let kind = if hash.contains("XEN11") {
+            FindKind::Xen11
+        } else {
+            FindKind::Xuni
+        };
+        return Ok(FoundPayload {
+            key: key.to_string(),
+            hash_to_verify: hash.to_string(),
+            account: format!("0x{hexsalt}"),
+            kind,
+            memory_cost,
+            worker: worker.to_string(),
+            attempts,
+            hashes_per_second,
+            found_at_utc: iso_utc(now_ms),
+        });
+    }
+    build_payload(
+        &CaptureInput {
+            hexsalt: hexsalt.to_string(),
+            key: key.to_string(),
+            hashed_pure: hash.to_string(),
+            memory_cost,
+            attempts,
+            hashes_per_second,
+            worker: worker.to_string(),
+        },
+        now_ms,
+    )
+}
+
 /// Journal append first. On SQLite failure, JSONL sink. Both fail → fatal halt.
 pub fn persist_find(
     journal: &impl FindJournalApi,

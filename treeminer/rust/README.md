@@ -10,12 +10,17 @@ wrap Crow, cpr, Boost.ProgramOptions, or the TUI through FFI.
 | `treeminer-journal` | done | `FindJournal` + `FallbackSink` (WAL + `synchronous=FULL`) |
 | `treeminer-submit` | done | `SubmissionManager` / breaker / drain (Tokio one worker) |
 | `treeminer-hash` (FFI) | done | C ABI around Hash API `hash-batch`; kernel still `nvcc` |
-| `treeminer-orchestrator` | done | config + journal-first capture + drain + hash CLI (`treeminer` bin) |
+| `treeminer-orchestrator` | done | config + journal-first capture + `mine` loop + drain + hash CLI (`treeminer` bin) |
 
 ```sh
 cargo test --manifest-path treeminer/rust/Cargo.toml
 cargo run --manifest-path treeminer/rust/Cargo.toml -p treeminer-orchestrator -- hash-help
+cargo run --manifest-path treeminer/rust/Cargo.toml -p treeminer-orchestrator -- mine --help
 ```
+
+`treeminer mine` is the journal-first host loop (hash-batch → capture → drain). Cargo tests
+drive it with the hash stub and `--donotupload`. Live GPU hashing stays in `xenblocksMiner`
+until the production `treeminer_hash.cpp` shim is linked.
 
 No GPU for crate tests. Cargo tests for `treeminer-hash` / the orchestrator hash CLI link a
 C stub of the same ABI; production `src/hashapi/treeminer_hash.cpp` dispatches to

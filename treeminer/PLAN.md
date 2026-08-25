@@ -30,7 +30,7 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
   PHC / margin / XUNI), `treeminer-journal` (SQLite WAL + `synchronous=FULL` + JSONL
   fallback sink), `treeminer-submit` (breaker / drain / `SubmissionManager`, Tokio one
   worker), `treeminer-hash` (C ABI around `hash-batch`; kernel stays `nvcc`), and
-  `treeminer-orchestrator` (config + journal-first capture + drain + hash CLI; binary
+  `treeminer-orchestrator` (config + journal-first capture + `mine` loop + drain + hash CLI; binary
   `treeminer`). CUDA stays `nvcc`. The C++ miner (`xenblocksMiner` / `main.cpp`) remains
   the live GPU process; the Rust host is additive and not wired into CMake.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a

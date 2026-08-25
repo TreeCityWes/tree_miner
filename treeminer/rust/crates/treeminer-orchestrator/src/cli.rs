@@ -4,21 +4,23 @@
 use std::collections::BTreeMap;
 
 use treeminer_hash::{FfiBackend, HashBackend};
-use treeminer_submit::StepResult;
+use treeminer_submit::{StepResult, SubmissionConfig, SubmissionManager};
 
 use crate::config::{load_config_txt, resolve_config, CliOverrides, DEFAULT_CONFIG_FILE};
 use crate::hash_cli::{format_hash_result, hash_request_from_flags, HASH_USAGE};
 use crate::host::{format_recovery, CaptureInput, Host};
 use crate::http::HttpTransport;
+use crate::mine::{account_hex, format_mine_report, mine_step, DiscardTransport, MineParams};
 
 pub const HOST_USAGE: &str = "\
-TreeMiner orchestrator — journal-first host (CUDA mine loop stays in xenblocksMiner)
+TreeMiner orchestrator — journal-first host (CUDA kernel stays in xenblocksMiner)
 
 Commands:
   hash-one / hash-batch / hash-help
   recover   [--journalPath <file>] [--config <config.txt>]
   capture   --salt <hex> --key <64-hex> --digest <b64> --difficulty <m>
   drain     [--steps <n>] [--journalPath <file>] [--rpcLink <url>]
+  mine      --minerAddr 0x... [--steps <n>] [--batch-size <n>] [--difficulty <n>] [--donotupload]
   --help
 
 Flags (config.txt supplies defaults; CLI wins):
@@ -35,6 +37,7 @@ const BOOL_FLAGS: &[&str] = &[
     "auto-batch-size",
     "first-block-dynamic-chunk-auto",
     "gpu-first-blocks",
+    "donotupload",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +50,7 @@ pub enum Command {
     Recover,
     Capture,
     Drain,
+    Mine,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -109,6 +113,7 @@ where
         Command::Recover => run_recover(&parsed.flags),
         Command::Capture => run_capture(&parsed.flags),
         Command::Drain => run_drain(&parsed.flags),
+        Command::Mine => run_mine(&parsed.flags),
     }
 }
 
@@ -141,6 +146,7 @@ fn parse_command(text: &str) -> Result<Command, String> {
         "recover" => Ok(Command::Recover),
         "capture" => Ok(Command::Capture),
         "drain" => Ok(Command::Drain),
+        "mine" => Ok(Command::Mine),
         "help" => Ok(Command::Help),
         other => Err(format!(
             "unknown command '{other}'. Try --help or hash-help."
@@ -334,6 +340,126 @@ fn run_drain(flags: &BTreeMap<String, String>) -> RunOutput {
                 stdout: out,
                 stderr: "submission drain halted\n".into(),
             };
+        }
+    }
+    RunOutput::ok(out)
+}
+
+fn run_mine(flags: &BTreeMap<String, String>) -> RunOutput {
+    let cfg = match load_resolved(flags) {
+        Ok(c) => c,
+        Err(e) => return RunOutput::err(1, format!("{e}\n")),
+    };
+    let addr = flags
+        .get("minerAddr")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cfg.miner_addr.clone());
+    let hexsalt = match flags.get("salt").filter(|s| !s.is_empty()) {
+        Some(s) => s.clone(),
+        None => match account_hex(&addr) {
+            Ok(h) => h,
+            Err(e) => return RunOutput::err(1, format!("{e}\n")),
+        },
+    };
+    let steps: usize = flags
+        .get("steps")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let batch_size: usize = flags
+        .get("batch-size")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(1)
+        .max(1);
+    let difficulty_override = flags.get("difficulty").and_then(|s| s.parse().ok());
+    let donotupload = flags
+        .get("donotupload")
+        .map(|s| s == "true")
+        .unwrap_or(false);
+    let pattern = flags
+        .get("pattern")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "XEN11".into());
+    let backend = flags
+        .get("backend")
+        .cloned()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "cpu".into());
+    let allow_xuni = flags.get("no-xuni").map(|s| s != "true").unwrap_or(true);
+    let worker = if cfg.worker.is_empty() {
+        flags.get("worker-id").cloned().unwrap_or_default()
+    } else {
+        cfg.worker.clone()
+    };
+
+    let host = match Host::open(&cfg.journal_path) {
+        Ok(h) => h,
+        Err(e) => {
+            return RunOutput::err(
+                1,
+                format!("JOURNAL cannot open {} | {e}\n", cfg.journal_path),
+            )
+        }
+    };
+    let mut out = format_recovery(&host.abs_path, &host.import, &host.recovery);
+    let params = MineParams {
+        hexsalt,
+        worker,
+        batch_size,
+        backend,
+        pattern,
+        allow_xuni,
+        difficulty_override,
+        margin: cfg.margin,
+    };
+    let mut hasher = FfiBackend;
+    let now_ms = || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    };
+    let mut submit_cfg = SubmissionConfig::default();
+    submit_cfg.margin = cfg.margin;
+
+    if donotupload {
+        let mut mgr =
+            SubmissionManager::with_config(host.journal, DiscardTransport, submit_cfg, None, None);
+        for i in 0..steps {
+            match mine_step(&mut hasher, &mut mgr, &host.fallback, &params, now_ms()) {
+                Ok(report) => {
+                    out.push_str(&format_mine_report(&report, i + 1));
+                    if report.fatal {
+                        return RunOutput {
+                            code: 1,
+                            stdout: out,
+                            stderr: "journal append and fallback sink both failed\n".into(),
+                        };
+                    }
+                }
+                Err(e) => return RunOutput::err(1, format!("{e}\n")),
+            }
+        }
+        return RunOutput::ok(out);
+    }
+
+    let transport = HttpTransport::new(&cfg.rpc_link, &params.worker);
+    let mut mgr = SubmissionManager::with_config(host.journal, transport, submit_cfg, None, None);
+    for i in 0..steps {
+        match mine_step(&mut hasher, &mut mgr, &host.fallback, &params, now_ms()) {
+            Ok(report) => {
+                out.push_str(&format_mine_report(&report, i + 1));
+                if report.fatal {
+                    return RunOutput {
+                        code: 1,
+                        stdout: out,
+                        stderr: "journal append and fallback sink both failed\n".into(),
+                    };
+                }
+            }
+            Err(e) => return RunOutput::err(1, format!("{e}\n")),
         }
     }
     RunOutput::ok(out)

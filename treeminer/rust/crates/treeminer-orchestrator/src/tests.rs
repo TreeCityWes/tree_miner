@@ -507,3 +507,104 @@ fn hash_request_helper_matches_stub_backend() {
     assert!(r.ok);
     assert_eq!(r.attempts, 3);
 }
+
+#[test]
+fn account_hex_strips_0x_and_rejects_short() {
+    assert_eq!(crate::account_hex(&format!("0x{SALT}")).unwrap(), SALT);
+    assert!(crate::account_hex("0xabc").is_err());
+}
+
+#[test]
+fn parse_difficulty_json_and_bare_int() {
+    assert_eq!(
+        crate::parse_difficulty_body(r#"{"difficulty":"1100"}"#),
+        Some(1100)
+    );
+    assert_eq!(crate::parse_difficulty_body("1727"), Some(1727));
+    assert_eq!(crate::parse_difficulty_body("nope"), None);
+}
+
+#[test]
+fn build_payload_from_full_phc_does_not_reassemble() {
+    let phc = "$argon2id$v=19$m=1100,t=1,p=1$AAAAAAAAAAAAAAAAAAAAAAAAAAA$XEN11digest";
+    let payload =
+        crate::build_payload_from_hash(SALT, &"aa".repeat(32), phc, 1100, 1, 1.0, "w", NOW_MS)
+            .unwrap();
+    assert_eq!(payload.hash_to_verify, phc);
+    assert_eq!(payload.kind, FindKind::Xen11);
+    assert_eq!(payload.account, format!("0x{SALT}"));
+}
+
+#[test]
+fn mine_step_journals_stub_matches_then_drains() {
+    let tmp = TempPaths::new("mine_step");
+    let host = Host::open(tmp.journal()).unwrap();
+    let confirm = r#"{"account":"x","hash_to_verify":"y","key":"z"}"#;
+    let transport = ScriptedTransport::new(
+        vec![TransportResult::ok(200, OK_200)],
+        vec![TransportResult::ok(200, confirm)],
+    );
+    let posted = Arc::clone(&transport.posted);
+    let mut cfg = SubmissionConfig::default();
+    cfg.backoff_base_ms = 2000;
+    let mut mgr = SubmissionManager::with_config(
+        host.journal,
+        transport,
+        cfg,
+        None,
+        Some(Arc::new(|| NOW_MS)),
+    );
+    let params = crate::MineParams {
+        hexsalt: SALT.into(),
+        worker: "rig0".into(),
+        batch_size: 4,
+        backend: "cpu".into(),
+        pattern: "stub".into(),
+        allow_xuni: false,
+        difficulty_override: Some(8),
+        margin: Default::default(),
+    };
+    let mut hasher = treeminer_hash::StubBackend;
+    let report = crate::mine_step(&mut hasher, &mut mgr, &host.fallback, &params, NOW_MS).unwrap();
+    assert!(report.hash_ok, "{}", report.hash_error);
+    assert_eq!(report.attempts, 4);
+    assert_eq!(report.effective_m, 8);
+    assert_eq!(report.captured, 4);
+    assert_eq!(posted.lock().unwrap().len(), 1);
+    let pending = mgr.journal().counts().unwrap();
+    assert!(pending.pending + pending.accepted_unconfirmed + pending.acked_total >= 1);
+}
+
+#[test]
+fn mine_cli_donotupload_journals_stub_finds() {
+    let tmp = TempPaths::new("mine_cli");
+    let journal = tmp.journal();
+    let out = run([
+        "treeminer",
+        "mine",
+        "--minerAddr",
+        &format!("0x{SALT}"),
+        "--journalPath",
+        journal.to_str().unwrap(),
+        "--difficulty",
+        "8",
+        "--batch-size",
+        "2",
+        "--steps",
+        "1",
+        "--pattern",
+        "stub",
+        "--no-xuni",
+        "--donotupload",
+    ]);
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    assert!(out.stdout.contains("captured=2"), "{}", out.stdout);
+    let host = Host::open(&journal).unwrap();
+    assert_eq!(host.journal.counts().unwrap().pending, 2);
+}
+
+#[test]
+fn mine_help_lists_command() {
+    let help = run(["treeminer", "--help"]);
+    assert!(help.stdout.contains("mine"));
+}

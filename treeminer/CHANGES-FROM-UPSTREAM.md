@@ -155,6 +155,7 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   yet.
 - **Rust orchestrator crate** (`treeminer/rust/crates/treeminer-orchestrator`): host process
   that replaces the *role* of `main.cpp` for journal-first capture, recover, drain, and
-  Hash API CLI (`hash-one` / `hash-batch`). Binary `treeminer`. HTTP via `std::net`
-  (not cpr/ureq); config.txt + argv without Boost; no Crow/TUI FFI. CUDA mine loop
-  stays in `xenblocksMiner`. Not wired into CMake.
+  Hash API CLI (`hash-one` / `hash-batch`). Binary `treeminer` now also has a
+  journal-first `mine` loop (hash-batch → capture → drain) using the hash FFI stub
+  in Cargo tests. HTTP via `std::net` (not cpr/ureq); config.txt + argv without Boost;
+  no Crow/TUI FFI. CUDA mine loop stays in `xenblocksMiner`. Not wired into CMake.
