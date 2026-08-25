@@ -1,0 +1,19 @@
+# TreeMiner Rust crates
+
+Incremental host-side rewrite. CUDA stays C++ (`kernelrunner.cu`); C++ still owns the GPU
+until the Hash API FFI crate exists. Each crate is replaceable behind the current miner.
+
+| Crate | Status | C++ source of truth |
+|---|---|---|
+| `treeminer-protocol` | done | `ResponseClassifier`, `PhcAssembler`, `MarginPolicy`, `xuniWindowAt` |
+| `treeminer-journal` | next | `FindJournal` + `FallbackSink` |
+| `treeminer-submit` | pending | `SubmissionManager` / breaker / drain |
+| `treeminer-hash` (FFI) | pending | Hash API `hash-batch`; kernel still `nvcc` |
+| orchestrator | last | replace `main.cpp` |
+
+```sh
+cargo test --manifest-path treeminer/rust/Cargo.toml
+```
+
+No GPU. Do not wrap Crow, cpr, Boost.ProgramOptions, or the TUI through FFI — replace those
+in later crates.

@@ -1,0 +1,24 @@
+name: Rust protocol
+
+on:
+  push:
+    paths:
+      - "treeminer/rust/**"
+      - ".github/workflows/rust.yml"
+  pull_request:
+    paths:
+      - "treeminer/rust/**"
+      - ".github/workflows/rust.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Test
+        run: cargo test --manifest-path treeminer/rust/Cargo.toml --workspace
+      - name: Format
+        run: cargo fmt --manifest-path treeminer/rust/Cargo.toml --all -- --check

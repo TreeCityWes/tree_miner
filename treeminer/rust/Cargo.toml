@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = ["crates/treeminer-protocol"]
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"

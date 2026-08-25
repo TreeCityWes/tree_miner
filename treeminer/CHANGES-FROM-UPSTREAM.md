@@ -135,3 +135,7 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
   updates are deliberate operator actions — an automatic 2 AM driver swap mid-mining
   (2026-08-11) preceded the reset storm and the NVML mismatch that broke `nvidia-smi`.
 - (planned) Strip/disable MQTT, marketplace, and telemetry paths in the Phase 1 default binary.
+- **Rust host protocol crate** (`treeminer/rust/crates/treeminer-protocol`): 1:1 port of
+  `ResponseClassifier`, `PhcAssembler` (unpadded PHC base64), `MarginPolicy`, and
+  `xuniWindowAt`. Zero GPU, `unsafe_code` forbidden. C++ miner is unchanged; later crates
+  (`journal`, `submit`, Hash API FFI) replace host code behind the current process.

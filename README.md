@@ -39,6 +39,7 @@ XUNI blocks accepted and `/get_block`-confirmed on day one).
 | Path | Contents |
 |---|---|
 | `treeminer/` | The miner (fork of XenblocksMiner + TreeMiner components). See `treeminer/PLAN.md` (design authority) and `treeminer/CHANGES-FROM-UPSTREAM.md` (divergence log) |
+| `treeminer/rust/` | Incremental Rust host crates. Protocol is first; CUDA stays C++. See `treeminer/rust/README.md` |
 | `treeminer/src/journal/` | Durable SQLite find journal |
 | `treeminer/src/submit/` | Classifier, circuit breaker, drain scheduler, submission manager |
 | `treeminer/tests/` | Unit suites + mock XenBlocks server with fault injection |

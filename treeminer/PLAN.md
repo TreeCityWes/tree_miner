@@ -25,7 +25,10 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
 ## 2. Languages & toolchain
 
 - **Core miner: C++17 + CUDA** — inherited from the fork; the kernel is proven and MIT-clean.
-  No rewrite in another language in Phase 1; churn there risks the one component that already works.
+  No rewrite of the kernel in another language; churn there risks the one component that already works.
+- **Host protocol (Rust, incremental):** `treeminer/rust/` — `treeminer-protocol` is a pure
+  1:1 port of classifier / PHC / margin / XUNI window. Later crates (journal, submit, Hash API
+  FFI, orchestrator) replace host C++ behind the existing process. CUDA stays `nvcc`.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a
   thin RAII class. WAL mode, `synchronous=FULL`.
 - **Build: CMake + vcpkg** (inherited; add one dependency line).
