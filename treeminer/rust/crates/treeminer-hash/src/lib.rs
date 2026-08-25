@@ -2,8 +2,9 @@
 //!
 //! Port of the host-side Hash API around `IHashBackend::runBatch`. The CUDA kernel stays
 //! in `kernelrunner.cu` and is reached through `CudaHashBackend` via
-//! `src/hashapi/treeminer_hash.cpp`. Cargo tests link a C stub (`native/stub.c`) that
-//! implements the same C ABI without GPU. No Crow, cpr, Boost, or TUI.
+//! `src/hashapi/treeminer_hash.cpp` when built with `--features cuda` (CMake target
+//! `treeminer_hash`). Default Cargo tests link a C stub (`native/stub.c`). No Crow, cpr,
+//! Boost, or TUI.
 
 pub mod ffi;
 pub mod matching;

@@ -3,7 +3,8 @@
 //
 // The CUDA kernel stays in kernelrunner.cu and is reached through CudaHashBackend.
 // This header is the FFI seam: Rust (treeminer-hash) and C++ (treeminer_hash.cpp) share
-// these types. Not wired into xenblocksMiner yet.
+// these types. CMake target `treeminer_hash` (optional, TREEMINER_BUILD_HASH_FFI) builds
+// the production .so; xenblocksMiner does not link it.
 
 #include <stddef.h>
 #include <stdint.h>

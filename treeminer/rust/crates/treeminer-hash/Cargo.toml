@@ -5,10 +5,17 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 description = "Hash API hash-batch FFI. CUDA kernel stays nvcc."
-links = "treeminer_hash_stub"
+links = "treeminer_hash"
 
 # Do not set `lints.workspace = true`: workspace `unsafe_code = "deny"` would
 # forbid the C ABI wrapper. Unsafe lives only in `src/ffi.rs`.
+
+[features]
+default = []
+# Link CMake `libtreeminer_hash` (treeminer_hash.cpp → CudaHashBackend → kernelrunner.cu).
+# Cargo tests stay on the C stub. Requires TREEMINER_HASH_LIB_DIR after
+# cmake -DTREEMINER_BUILD_HASH_FFI=ON --target treeminer_hash.
+cuda = []
 
 [build-dependencies]
 cc = "1"

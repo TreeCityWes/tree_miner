@@ -151,11 +151,14 @@ Kernel policy (Phase 1): `src/kernelrunner.cu` and all hashing-path files carry 
 - **Rust hash crate** (`treeminer/rust/crates/treeminer-hash`): C ABI around Hash API
   `hash-batch` (`src/hashapi/treeminer_hash.h`). Cargo tests link a C stub; production
   `treeminer_hash.cpp` dispatches to `CpuHashBackend` / `CudaHashBackend` (kernel stays
-  `kernelrunner.cu`). Validation and matching ported 1:1. Not wired into `xenblocksMiner`
-  yet.
+  `kernelrunner.cu`). Validation and matching ported 1:1. Optional CMake target
+  `treeminer_hash` (`-DTREEMINER_BUILD_HASH_FFI=ON`, default OFF) builds
+  `libtreeminer_hash.so` for Rust `--features cuda`. That library is **not** linked into
+  `xenblocksMiner`.
 - **Rust orchestrator crate** (`treeminer/rust/crates/treeminer-orchestrator`): host process
   that replaces the *role* of `main.cpp` for journal-first capture, recover, drain, and
   Hash API CLI (`hash-one` / `hash-batch`). Binary `treeminer` now also has a
   journal-first `mine` loop (hash-batch → capture → drain) using the hash FFI stub
-  in Cargo tests. HTTP via `std::net` (not cpr/ureq); config.txt + argv without Boost;
-  no Crow/TUI FFI. CUDA mine loop stays in `xenblocksMiner`. Not wired into CMake.
+  in Cargo tests. `--features cuda` is the GPU canary (`mine --backend cuda --donotupload`
+  on a separate journal). HTTP via `std::net` (not cpr/ureq); config.txt + argv without Boost;
+  no Crow/TUI FFI. Live GPU process stays `xenblocksMiner`. Not wired into systemd.

@@ -6,6 +6,7 @@ option(XENBLOCKS_BUILD_HASHAPI_CLI "Build the standalone Hash API CLI" OFF)
 option(XENBLOCKS_HASHAPI_STUB_BACKEND "Build hashapi-cli with a deterministic stub backend for CLI smoke tests" OFF)
 option(XENBLOCKS_BUILD_HASH_DIAGNOSTICS "Build small hash diagnostic self-test tools" ON)
 option(XENBLOCKS_STATIC_LIBSTDCXX "Statically link libstdc++/libgcc for a portable binary; turn OFF when the CUDA host compiler is older than the toolchain that built the vcpkg deps" ON)
+option(TREEMINER_BUILD_HASH_FFI "Build libtreeminer_hash (C ABI for the Rust host). Not linked into xenblocksMiner." OFF)
 
 # Remember whether the caller selected an architecture. CMake may initialize
 # CMAKE_CUDA_ARCHITECTURES while enabling CUDA, so this must be captured first.
@@ -298,6 +299,53 @@ if(XENBLOCKS_BUILD_MINER)
     if(WIN32 AND XENBLOCKS_PAHO_MQTT_CPP_SHARED)
         target_compile_definitions(${PROJECT_NAME} PRIVATE PAHO_MQTTPP_IMPORTS)
     endif()
+endif()
+
+# Extra shared library for the Rust host (`treeminer-hash` crate `--features cuda`).
+# NOT linked into xenblocksMiner — the live GPU process is unchanged.
+if(TREEMINER_BUILD_HASH_FFI)
+    if(NOT XENBLOCKS_BUILD_MINER)
+        message(FATAL_ERROR "TREEMINER_BUILD_HASH_FFI=ON requires XENBLOCKS_BUILD_MINER=ON (CUDA + argon2).")
+    endif()
+    find_package(Threads REQUIRED)
+    add_library(treeminer_hash SHARED
+        src/hashapi/treeminer_hash.cpp
+        src/hashapi/CpuHashBackend.cpp
+        src/hashapi/CudaHashBackend.cpp
+        src/hashapi/HashApiValidation.cpp
+        src/hashapi/HashApiMatching.cpp
+        src/hashapi/HashApiEncoding.cpp
+        src/Argon2idHasher.cpp
+        src/argon2params.cpp
+        src/blake2b.cpp
+        src/CudaBackend.cpp
+        src/CudaDevice.cpp
+        src/kernelrunner.cu
+    )
+    target_include_directories(treeminer_hash PRIVATE src)
+    target_compile_features(treeminer_hash PRIVATE cxx_std_17)
+    target_compile_definitions(treeminer_hash PRIVATE XENBLOCKS_BUILD_MINER=1)
+    target_compile_options(treeminer_hash PRIVATE
+        $<$<COMPILE_LANGUAGE:CUDA>:-Wno-deprecated-gpu-targets>
+    )
+    set_target_properties(treeminer_hash PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        CUDA_RESOLVE_DEVICE_SYMBOLS ON
+        LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/lib"
+        BUILD_RPATH "${CUDAToolkit_LIBRARY_DIR}"
+        INSTALL_RPATH "${CUDAToolkit_LIBRARY_DIR}"
+    )
+    target_link_libraries(treeminer_hash PRIVATE
+        CUDA::cudart
+        unofficial::argon2::libargon2
+        Threads::Threads
+    )
+    file(GENERATE
+        OUTPUT "${CMAKE_BINARY_DIR}/treeminer-hash-cuda.env"
+        CONTENT "TREEMINER_HASH_LIB_DIR=$<TARGET_FILE_DIR:treeminer_hash>\nLD_LIBRARY_PATH=$<TARGET_FILE_DIR:treeminer_hash>:\$LD_LIBRARY_PATH\n"
+    )
 endif()
 
 if(XENBLOCKS_BUILD_HASHAPI_CLI)

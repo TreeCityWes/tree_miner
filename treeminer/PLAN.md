@@ -32,7 +32,10 @@ Attribution: retain Woody's MIT notice and add ours; state derivation in README.
   worker), `treeminer-hash` (C ABI around `hash-batch`; kernel stays `nvcc`), and
   `treeminer-orchestrator` (config + journal-first capture + `mine` loop + drain + hash CLI; binary
   `treeminer`). CUDA stays `nvcc`. The C++ miner (`xenblocksMiner` / `main.cpp`) remains
-  the live GPU process; the Rust host is additive and not wired into CMake.
+  the live GPU process. Optional CMake target `treeminer_hash` (`-DTREEMINER_BUILD_HASH_FFI=ON`,
+  default OFF) builds `libtreeminer_hash.so` for Rust `--features cuda`; it is **not** linked
+  into `xenblocksMiner`. Default `cargo test` links `native/stub.c` and must not enable `cuda`
+  in CI.
 - **Persistence: SQLite ≥3.35** via the `sqlite3` vcpkg port (public domain), C API wrapped in a
   thin RAII class. WAL mode, `synchronous=FULL`.
 - **Build: CMake + vcpkg** (inherited; add one dependency line).

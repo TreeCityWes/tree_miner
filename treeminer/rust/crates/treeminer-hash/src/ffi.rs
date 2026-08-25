@@ -255,6 +255,18 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "cuda"))]
+    #[test]
+    fn default_cargo_test_links_the_stub_not_cuda() {
+        let r = hash_batch(&req());
+        assert_eq!(r.backend, "cpu-stub");
+        assert!(
+            !cfg!(feature = "cuda"),
+            "workspace cargo test must use the C stub; --features cuda is a GPU canary"
+        );
+    }
+
+    #[cfg(not(feature = "cuda"))]
     #[test]
     fn ffi_batch_round_trips_through_the_c_abi() {
         let r = hash_batch(&req());
@@ -266,6 +278,7 @@ mod tests {
         assert!(r.matches[0].hash.contains("stub$argon2id-xen$"));
     }
 
+    #[cfg(not(feature = "cuda"))]
     #[test]
     fn ffi_validation_errors_match_cpp_strings() {
         let mut r = req();
@@ -285,6 +298,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "cuda"))]
     #[test]
     fn ffi_hash_one_fixed_key() {
         let mut r = req();
@@ -295,6 +309,7 @@ mod tests {
         assert!(out.hash.contains(&r.key));
     }
 
+    #[cfg(not(feature = "cuda"))]
     #[test]
     fn rust_stub_and_c_abi_agree_on_fixed_key_hash() {
         let mut req = req();
@@ -306,6 +321,7 @@ mod tests {
         assert_eq!(ffi.attempts, rust.attempts);
     }
 
+    #[cfg(not(feature = "cuda"))]
     #[test]
     fn ffi_cuda_rejected_by_stub() {
         let mut r = req();

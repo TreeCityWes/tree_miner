@@ -1,6 +1,7 @@
 // C ABI implementation of hash-batch. Dispatches to CpuHashBackend / CudaHashBackend.
-// The CUDA kernel stays in kernelrunner.cu. Not linked into xenblocksMiner yet
-// (orchestrator crate will wire this). Compile-checked by the Rust crate's C stub twin.
+// The CUDA kernel stays in kernelrunner.cu.
+// CMake target `treeminer_hash` (TREEMINER_BUILD_HASH_FFI=ON) builds this as a shared
+// library for the Rust host. It is NOT linked into xenblocksMiner.
 
 #include "treeminer_hash.h"
 

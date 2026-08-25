@@ -19,6 +19,7 @@ jobs:
         with:
           components: rustfmt
       - name: Test
+        # Do not pass --features cuda: that links libtreeminer_hash (GPU) and is not for CI.
         run: cargo test --manifest-path treeminer/rust/Cargo.toml --workspace
       - name: Format
         run: cargo fmt --manifest-path treeminer/rust/Cargo.toml --all -- --check

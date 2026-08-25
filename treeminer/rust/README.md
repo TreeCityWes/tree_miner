@@ -19,9 +19,20 @@ cargo run --manifest-path treeminer/rust/Cargo.toml -p treeminer-orchestrator --
 ```
 
 `treeminer mine` is the journal-first host loop (hash-batch → capture → drain). Cargo tests
-drive it with the hash stub and `--donotupload`. Live GPU hashing stays in `xenblocksMiner`
-until the production `treeminer_hash.cpp` shim is linked.
+drive it with the hash stub and `--donotupload`.
 
-No GPU for crate tests. Cargo tests for `treeminer-hash` / the orchestrator hash CLI link a
-C stub of the same ABI; production `src/hashapi/treeminer_hash.cpp` dispatches to
-`CpuHashBackend` / `CudaHashBackend` (kernel stays `kernelrunner.cu`).
+## CUDA canary (does not change xenblocksMiner)
+
+Default `cargo test` links `native/stub.c`. Production hashing is CMake target
+`treeminer_hash` (`treeminer_hash.cpp` → `CudaHashBackend` → `kernelrunner.cu`), **not**
+linked into the `xenblocksMiner` executable.
+
+```sh
+cmake -S treeminer -B build -DTREEMINER_BUILD_HASH_FFI=ON
+cmake --build build --target treeminer_hash
+set -a && source build/treeminer-hash-cuda.env && set +a
+# canary journal — never the live runtime-live/ file
+cargo run --manifest-path treeminer/rust/Cargo.toml -p treeminer-orchestrator \
+  --features cuda -- mine --backend cuda --donotupload \
+  --journalPath /tmp/treeminer-canary.db --minerAddr 0xYourAddress --steps 1
+```
