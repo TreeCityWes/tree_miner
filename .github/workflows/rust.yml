@@ -27,7 +27,9 @@ jobs:
               stripped = line.lstrip()
               if stripped.startswith("#"):
                   continue
-              if "--features cuda" in line or "--features=cuda" in line:
+              if "cargo " not in stripped:
+                  continue
+              if "--features cuda" in stripped or "--features=cuda" in stripped:
                   raise SystemExit(f"{i}: CI must not enable --features cuda: {line}")
           print("ok: rust CI stays on the C stub (no --features cuda)")
           PY
