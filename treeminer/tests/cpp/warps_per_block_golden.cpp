@@ -20,7 +20,7 @@ int main(int argc, char** argv)
     int count = 0;
     const cudaError_t status = cudaGetDeviceCount(&count);
     if (status != cudaSuccess || count <= 0) {
-        std::cout << "SKIP: no CUDA device (" << cudaGetErrorString(status) << ")\n";
+        std::cout << "SKIP: no " TREEMINER_GPU_BACKEND_NAME " device (" << cudaGetErrorString(status) << ")\n";
         return 0;
     }
     if (device < 0 || device >= count) {
