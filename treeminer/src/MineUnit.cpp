@@ -45,10 +45,11 @@ int MineUnit::runMineLoop()
 
 		{
 			std::lock_guard<std::mutex> lock(mtx);
-			// Compare against difficulty + margin, not bare difficulty: a change in either
-			// one means this unit is now mining at the wrong memory cost. Breaking here
-			// returns to runMiningOnDevice, which rebuilds the unit at the new cost.
-			if (effectiveMiningDifficulty() != static_cast<int>(difficulty)) {
+			// Compare against this LANE's cost (live difficulty + margin, or the stockpile
+			// lock, per streamIndex_): a change in any of them means this unit is now mining
+			// at the wrong memory cost. Breaking here returns to runMiningOnDevice, which
+			// rebuilds the unit at the new cost.
+			if (laneMiningDifficulty(streamIndex_) != static_cast<int>(difficulty)) {
 				break;
 			}
 		}

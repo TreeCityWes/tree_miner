@@ -85,6 +85,14 @@ public:
         // How often the auto ramp is re-evaluated. Auto mode reads journal counts, so this is
         // deliberately coarse — the ramp moves on a 300 s scale, not a 250 ms one.
         std::int64_t margin_eval_interval_ms = 5000;
+
+        // Stockpile mode (lock_mining_diff): park XEN11 finds whose m is below the last
+        // observed server difficulty WITHOUT a submit attempt — every such submit is a
+        // guaranteed 401, and at a locked-low memory cost the find rate makes that a
+        // sustained 401 stream against the pool. unparkForDifficulty() releases them the
+        // moment the floor falls to m (boundary inclusive). Off by default: in normal
+        // mining a below-floor find is rare and the 401's difficulty hint is useful.
+        bool pre_park_below_difficulty = false;
     };
 
     enum class StepResult {

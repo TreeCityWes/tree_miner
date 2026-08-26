@@ -668,6 +668,30 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     if (rec == nullptr) {
         return StepResult::Idle;
     }
+
+    // Stockpile pre-park (Config.pre_park_below_difficulty): skip the guaranteed-401 round
+    // trip for a XEN11 find mined below the observed floor. XUNI keeps the normal path —
+    // its window budget machinery owns its parking, and open windows already bound its rate.
+    if (cfg_.pre_park_below_difficulty && rec->payload.kind == FindKind::XEN11) {
+        const std::optional<std::uint32_t> known = lastObservedDifficulty();
+        if (known && rec->payload.memory_cost < *known) {
+            Classification c;
+            c.next_status = FindStatus::ParkedDifficulty;
+            c.reason = "pre-parked locally: m=" + std::to_string(rec->payload.memory_cost) +
+                       " < server difficulty " + std::to_string(*known) +
+                       " (no submit attempt; releases when difficulty falls to m)";
+            journal_.recordAttempt(rec->id, c, std::nullopt, "", std::nullopt,
+                                   isoUtc(wall_()));
+            emitOutcome_(*rec, c, std::nullopt);
+            ConsoleLog::event(ConsoleLog::Level::Park, "SUBMIT",
+                              std::string(logKind(rec->payload.kind)) + " #" +
+                                  std::to_string(rec->id) + " | " + c.reason);
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.parked_difficulty;
+            return StepResult::Submitted;
+        }
+    }
+
     if (!breaker_.tryAdmit()) {
         return StepResult::BreakerBlocked;
     }

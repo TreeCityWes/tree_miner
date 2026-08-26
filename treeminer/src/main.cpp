@@ -175,9 +175,10 @@ static void runMiningOnDevice(ComputeBackend& backend,
 
     while (running)
     {
-        // difficulty + margin: the unit mines, sizes its batch, and bakes m= from this one
-        // value (MiningCommon.cpp). A margin change breaks the loop and rebuilds the unit.
-        MineUnit unit(backend, effectiveMiningDifficulty(), submitCallback, statCallback,
+        // Lane cost (live difficulty + margin, or the stockpile lock, per stream): the unit
+        // mines, sizes its batch, and bakes m= from this one value (MiningCommon.cpp). A
+        // change in the lane's cost breaks the loop and rebuilds the unit.
+        MineUnit unit(backend, laneMiningDifficulty(streamIndex), submitCallback, statCallback,
                       streamIndex);
         int rc = unit.runMineLoop();
         if (rc < 0)
@@ -242,6 +243,8 @@ int main(int argc, const char *const *argv)
             ("device", po::value<std::string>(), "device index list[--device=1,2,7] to run the miner on")
             ("saveConfig", "update configuration file with console inputs")
             ("testFixedDiff", po::value<int>(), "run in test mode with a fixed difficulty")
+            ("lockMiningDiff", po::value<int>(), "mine every block at this fixed memory cost; finds park until the server difficulty falls to or below it (submissions stay live, margin ignored)")
+            ("lockLiveLanes", po::value<int>(), "with --lockMiningDiff: this many CUDA streams per card keep mining at the LIVE difficulty; the rest mine the lock (default 0 = all locked)")
             ("rpcLink", po::value<std::string>(), "set rpc link")
             ("customName", po::value<std::string>(), "set custom name")
             ("platform-mode", "enable hashpower marketplace platform mode")
@@ -367,6 +370,65 @@ int main(int argc, const char *const *argv)
                     globalDifficultyMargin = static_cast<int>(globalMarginConfig.margin_kib);
                 }
                 std::cout << std::endl;
+            }
+
+            // --- mining difficulty lock (stockpile mode) ---
+            // Same precedence as the margin keys: config.txt (`lock_mining_diff`) supplies
+            // the default, --lockMiningDiff overrides. Guarded to a sane positive range;
+            // an unparseable value is fatal for the same reason as the margin keys.
+            {
+                std::string lockText = configuredValue("lock_mining_diff");
+                if (vm.count("lockMiningDiff")) {
+                    lockText = std::to_string(vm["lockMiningDiff"].as<int>());
+                }
+                if (!lockText.empty()) {
+                    long long lockValue = -1;
+                    try {
+                        lockValue = std::stoll(lockText);
+                    } catch (const std::exception&) {
+                        lockValue = -1;
+                    }
+                    if (lockValue < 0 || lockValue > 100000000LL) {
+                        std::cerr << "Invalid lock_mining_diff / --lockMiningDiff value '"
+                                  << lockText << "' (expected 0-100000000; 0 disables)."
+                                  << std::endl;
+                        return -1;
+                    }
+                    globalMiningDifficultyLock = static_cast<int>(lockValue);
+                    if (lockValue > 0) {
+                        std::cout << "MINING DIFFICULTY LOCKED at m=" << lockValue
+                                  << " (stockpile mode: finds park until server difficulty <= "
+                                  << lockValue << "; margin ignored)" << std::endl;
+                    }
+                }
+
+                // Lane split (`lock_live_lanes` / --lockLiveLanes): only meaningful with the
+                // lock on; validated against the stream count later where it is known.
+                std::string lanesText = configuredValue("lock_live_lanes");
+                if (vm.count("lockLiveLanes")) {
+                    lanesText = std::to_string(vm["lockLiveLanes"].as<int>());
+                }
+                if (!lanesText.empty()) {
+                    long long lanesValue = -1;
+                    try {
+                        lanesValue = std::stoll(lanesText);
+                    } catch (const std::exception&) {
+                        lanesValue = -1;
+                    }
+                    if (lanesValue < 0 || lanesValue > 16) {
+                        std::cerr << "Invalid lock_live_lanes / --lockLiveLanes value '"
+                                  << lanesText << "' (expected 0-16)." << std::endl;
+                        return -1;
+                    }
+                    globalLockLiveLanes = static_cast<int>(lanesValue);
+                    if (lanesValue > 0 && globalMiningDifficultyLock.load() > 0) {
+                        std::cout << "LANE SPLIT: first " << lanesValue
+                                  << " stream(s) per card mine LIVE difficulty; remaining "
+                                  << "stream(s) mine the m="
+                                  << globalMiningDifficultyLock.load() << " stockpile"
+                                  << std::endl;
+                    }
+                }
             }
 
             // --- journal path (PLAN §5 `journal_path`) ---
@@ -703,6 +765,9 @@ int main(int argc, const char *const *argv)
         findTransport = std::make_unique<treeminer::HttpTransport>(globalRpcLink, machineId);
         treeminer::SubmissionManager::Config submitConfig;
         submitConfig.margin = globalMarginConfig;
+        // Stockpile mode: locked-low finds are guaranteed 401s — park them locally and let
+        // unparkForDifficulty release them when the floor drops to the lock.
+        submitConfig.pre_park_below_difficulty = globalMiningDifficultyLock.load() > 0;
         submissionManager = std::make_unique<treeminer::SubmissionManager>(
             *findJournal, *findTransport, submitConfig);
         // The drain thread's own unrecoverable-journal detection converges on the SAME fatal
@@ -1166,7 +1231,10 @@ int main(int argc, const char *const *argv)
         }
         cpuMiningWorker = std::make_unique<treeminer::CpuMiningWorker>(
             cpuConfig,
-            [] { return static_cast<std::uint32_t>(globalDifficulty.load()); },
+            [] {
+                const int lock = globalMiningDifficultyLock.load();
+                return static_cast<std::uint32_t>(lock > 0 ? lock : globalDifficulty.load());
+            },
             [cpuWorkSequence] {
                 treeminer::CpuMiningWorker::Work work;
                 const MiningContext ctx = MiningCoordinator::getInstance().getContext();

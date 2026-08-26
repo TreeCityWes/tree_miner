@@ -20,7 +20,7 @@ Environment=TREEMINER_NO_TUI=1
 # Driver is not always ready on the first second after a dirty reboot.
 ExecStartPre=/bin/bash -c 'for i in $(seq 1 30); do nvidia-smi >/dev/null 2>&1 && exit 0; sleep 2; done; echo "nvidia-smi not ready after 60s" >&2; exit 1'
 # --execute: systemd is the supervisor. --display logs only — never terminal/TUI.
-ExecStart=/home/wes/tree_miner/build-sm86-cuda13/bin/xenblocksMiner --execute --minerAddr 0xe4bB184781bBC9C7004e8DafD4A9B49d203BC9bC --totalDevFee 0 --display logs --dashboard-bind 0.0.0.0 --dashboard-port 42069 --journalPath /home/wes/tree_miner/runtime-live/treeminer-journal.db --cpuWorkers 0
+ExecStart=/home/wes/tree_miner/build-sm86-cuda13/bin/xenblocksMiner --execute --minerAddr 0xe4bB184781bBC9C7004e8DafD4A9B49d203BC9bC --totalDevFee 0 --display logs --dashboard-bind 0.0.0.0 --dashboard-port 42069 --journalPath /home/wes/tree_miner/runtime-live/treeminer-journal.db --cpuWorkers 0 --cudaStreams 2
 Restart=always
 RestartSec=15
 TimeoutStopSec=30
