@@ -16,7 +16,7 @@
 // NOT survive total-disk failure: a full filesystem, a read-only remount, or dead media
 // takes the sink down with the journal. It is not a second copy for durability; it is a
 // second *mechanism* for a disjoint set of failures where SQLite specifically fails while
-// a dumb O_APPEND write still succeeds:
+// a plain O_APPEND write still succeeds:
 //
 //   * SQLITE_BUSY past the 5 s busy_timeout — another process (a stale miner instance, a
 //     backup job, an operator's sqlite3 shell in a transaction) holds the write lock.

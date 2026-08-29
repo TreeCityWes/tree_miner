@@ -12,7 +12,7 @@
 //
 // Confirmation-aware acks (PLAN §10.2): a 200 or duplicate is AcceptedUnconfirmed until
 // GET /get_block?key= finds the row (-> Acked). A 404 on lookup after a 200 is the
-// server's lying-200 (insert retries exhausted, gpage.py:492-494,515): the record goes
+// server's unconfirmed-200 (insert retries exhausted, gpage.py:492-494,515): the record goes
 // back to Pending and is resubmitted. If the lookup itself is unavailable, the record
 // stays AcceptedUnconfirmed with a backed-off next_attempt_at and is re-driven later via
 // fetchAwaitingConfirmation (contract v1.1) — never silently presented as confirmed.
@@ -85,6 +85,12 @@ public:
         // How often the auto ramp is re-evaluated. Auto mode reads journal counts, so this is
         // deliberately coarse — the ramp moves on a 300 s scale, not a 250 ms one.
         std::int64_t margin_eval_interval_ms = 5000;
+
+        // Park finds whose m is below the last observed server difficulty WITHOUT a submit
+        // attempt — every such submit is a guaranteed 401, and a sustained wrong-difficulty
+        // stream reads as abuse to the server. unparkForDifficulty() releases them the
+        // moment the floor falls to m (boundary inclusive).
+        bool pre_park_below_difficulty = false;
     };
 
     enum class StepResult {
@@ -175,7 +181,7 @@ public:
         std::uint64_t accepted_unconfirmed = 0;
         std::uint64_t reconciled_via_get_block = 0;
         std::uint64_t confirmation_retries = 0;
-        std::uint64_t lying_200_detected = 0;
+        std::uint64_t unconfirmed_200_detected = 0;
         std::uint64_t parked_difficulty = 0;
         std::uint64_t parked_xuni = 0;
         std::uint64_t quarantined = 0;

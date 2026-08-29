@@ -190,8 +190,8 @@ int main() {
         CHECK(outcomes.front() == FindStatus::Acked);
     }
 
-    // --- the lying-200: confirm 404 -> back to Pending ---
-    TEST_CASE("200 with absent lookup is resubmitted (lying-200)");
+    // --- the unconfirmed-200: confirm 404 -> back to Pending ---
+    TEST_CASE("200 with absent lookup is resubmitted (unconfirmed-200)");
     {
         FakeJournal j;
         FakeTransport t;
@@ -205,7 +205,7 @@ int main() {
         CHECK(m.runOnce() == StepResult::Submitted);
         CHECK(j.record(id).status == FindStatus::Pending);
         CHECK(j.record(id).next_attempt_at.has_value());
-        CHECK_EQ(m.metrics().lying_200_detected, 1u);
+        CHECK_EQ(m.metrics().unconfirmed_200_detected, 1u);
         // Second pass (after backoff) resubmits and this time it sticks.
         clk.advance(10000);
         t.submit_queue.push_back(ok(200, kOk200));
@@ -493,7 +493,7 @@ int main() {
         CHECK_EQ(m.metrics().reconciled_via_get_block, 1u);
     }
 
-    TEST_CASE("confirmation retry finds 404 -> Pending (lying-200 caught late)");
+    TEST_CASE("confirmation retry finds 404 -> Pending (unconfirmed-200 caught late)");
     {
         FakeJournal j;
         FakeTransport t;
@@ -508,7 +508,7 @@ int main() {
         CHECK(m.runOnce() == StepResult::ConfirmRetried);
         CHECK(j.record(id).status == FindStatus::Pending);
         CHECK(j.record(id).next_attempt_at.has_value());
-        CHECK_EQ(m.metrics().lying_200_detected, 1u);
+        CHECK_EQ(m.metrics().unconfirmed_200_detected, 1u);
         // After the backoff it re-enters the normal submission drain.
         clk.advance(10000);
         t.submit_queue.push_back(ok(200, kOk200));

@@ -12,9 +12,12 @@ std::atomic<bool> running = true;
 std::atomic<int> globalDifficulty = 1727;
 std::atomic<bool> globalDifficultyEndpointDown = false;
 std::atomic<int> globalDifficultyMargin = 0;
+std::atomic<int> globalMiningDifficultyLock = 0;
+std::atomic<int> globalLockLiveLanes = 0;
 std::mutex mtx;
 
-int effectiveMiningDifficulty() {
+namespace {
+int liveMiningDifficulty() {
     const int difficulty = globalDifficulty.load();
     const int margin = globalDifficultyMargin.load();
     // Defensive: a negative or overflowing sum would mean mining at a memory cost the server
@@ -27,6 +30,23 @@ int effectiveMiningDifficulty() {
         return difficulty;
     }
     return static_cast<int>(sum);
+}
+} // namespace
+
+int effectiveMiningDifficulty() {
+    const int lock = globalMiningDifficultyLock.load();
+    if (lock > 0) {
+        return lock;
+    }
+    return liveMiningDifficulty();
+}
+
+int laneMiningDifficulty(int streamIndex) {
+    const int lock = globalMiningDifficultyLock.load();
+    if (lock > 0 && streamIndex >= globalLockLiveLanes.load()) {
+        return lock;
+    }
+    return liveMiningDifficulty();
 }
 std::mutex coutmtx;
 

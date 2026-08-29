@@ -64,6 +64,22 @@ extern std::atomic<bool> globalDifficultyEndpointDown;
 // Published by the SubmissionManager's margin policy; 0 unless an operator enables it.
 extern std::atomic<int> globalDifficultyMargin;
 
+// Difficulty lock: when > 0, every new batch mines at exactly this memory cost regardless of
+// the live server difficulty. The submission pipeline still tracks the real difficulty, so
+// finds mined below it park (ParkedDifficulty) and auto-release when the floor falls to or
+// below the lock. Overrides the margin (an exact cost is the whole point of the lock).
+extern std::atomic<int> globalMiningDifficultyLock;
+
+// Lane split under the lock: the first N CUDA streams of each card keep mining at the LIVE
+// difficulty while the remaining streams mine at the lock. 0 = every stream mines the lock.
+// Ignored while the lock is off.
+extern std::atomic<int> globalLockLiveLanes;
+
+// The memory cost a specific lane (CUDA stream) must mine at: the live difficulty (+margin)
+// for the first globalLockLiveLanes streams, the lock for the rest. Identical to
+// effectiveMiningDifficulty() when the lock is off.
+int laneMiningDifficulty(int streamIndex);
+
 // The memory cost new batches must actually mine at. Every producer of a hash — batch sizing,
 // the kernel request, and the m= baked into the PHC string — must agree on this one value,
 // or the miner would advertise a cost it did not pay.

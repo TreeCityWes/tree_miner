@@ -668,6 +668,31 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     if (rec == nullptr) {
         return StepResult::Idle;
     }
+
+    // Pre-park (Config.pre_park_below_difficulty): skip the guaranteed-401 round trip for
+    // any find mined below the observed floor — XUNI included, since the server rejects on
+    // difficulty before the window check. A sustained wrong-difficulty stream is abuse from
+    // the server's point of view, so the round trip is not just wasted, it is a liability.
+    if (cfg_.pre_park_below_difficulty) {
+        const std::optional<std::uint32_t> known = lastObservedDifficulty();
+        if (known && rec->payload.memory_cost < *known) {
+            Classification c;
+            c.next_status = FindStatus::ParkedDifficulty;
+            c.reason = "pre-parked locally: m=" + std::to_string(rec->payload.memory_cost) +
+                       " < server difficulty " + std::to_string(*known) +
+                       " (no submit attempt; releases when difficulty falls to m)";
+            journal_.recordAttempt(rec->id, c, std::nullopt, "", std::nullopt,
+                                   isoUtc(wall_()));
+            emitOutcome_(*rec, c, std::nullopt);
+            ConsoleLog::event(ConsoleLog::Level::Park, "SUBMIT",
+                              std::string(logKind(rec->payload.kind)) + " #" +
+                                  std::to_string(rec->id) + " | " + c.reason);
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            ++metrics_.parked_difficulty;
+            return StepResult::Submitted;
+        }
+    }
+
     if (!breaker_.tryAdmit()) {
         return StepResult::BreakerBlocked;
     }
@@ -730,14 +755,14 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
             std::lock_guard<std::mutex> lk(state_mutex_);
             ++metrics_.confirm_body_rejected;
         } else if (conf.transport_ok && conf.http_status == 404) {
-            // The lying-200 (gpage.py:492-494,515): the server said saved, the lookup says
+            // The unconfirmed-200 (gpage.py:492-494,515): the server said saved, the lookup says
             // absent. Resubmit — replay is idempotent thanks to the UNIQUE key.
             c.next_status = FindStatus::Pending;
             c.needs_lookup_confirmation = false;
             c.reason += "; /get_block says ABSENT — server 200 was not durable, resubmitting";
             next_attempt = backoffTimeIso_(rec->attempt_count, std::nullopt);
             std::lock_guard<std::mutex> lk(state_mutex_);
-            ++metrics_.lying_200_detected;
+            ++metrics_.unconfirmed_200_detected;
         } else {
             // Lookup unavailable: remain AcceptedUnconfirmed with a backed-off
             // next_attempt_at so fetchAwaitingConfirmation re-drives it later
@@ -945,12 +970,12 @@ SubmissionManager::StepResult SubmissionManager::confirmStep_() {
                 ++metrics_.confirm_body_rejected;
             }
         } else if (conf.transport_ok && conf.http_status == 404) {
-            // The lying-200, caught on retry: the row never became durable server-side.
+            // The unconfirmed-200, caught on retry: the row never became durable server-side.
             c.next_status = FindStatus::Pending;
             c.reason = "/get_block says ABSENT — server 200 was not durable, resubmitting";
             next_attempt = backoffTimeIso_(rec.attempt_count, std::nullopt);
             std::lock_guard<std::mutex> lk(state_mutex_);
-            ++metrics_.lying_200_detected;
+            ++metrics_.unconfirmed_200_detected;
         } else {
             // Still unavailable (transport failure, 5xx, unexpected schema): stay
             // AcceptedUnconfirmed and push the retry out with per-record backoff.

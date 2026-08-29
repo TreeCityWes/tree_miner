@@ -14,7 +14,7 @@ using treeminer::kTransportError;
 
 int main() {
     // --- Row: 200 -> AcceptedUnconfirmed, needs_lookup_confirmation (gpage.py:515,
-    // lying-200 risk at gpage.py:492-494) ---
+    // unconfirmed-200 risk at gpage.py:492-494) ---
     TEST_CASE("200 success is only AcceptedUnconfirmed");
     {
         auto c = classify(200, R"({"message": "Hash verified successfully and block saved."})",

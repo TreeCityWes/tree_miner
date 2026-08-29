@@ -26,7 +26,7 @@ Exact response strings served (the classifier truth table):
 
 | Code | Body |
 |---|---|
-| 200 | `{"message": "Hash verified successfully and block saved."}` — **also returned in `insert-fail` mode with nothing stored** (the lying-200, :492-494,515) |
+| 200 | `{"message": "Hash verified successfully and block saved."}` — **also returned in `insert-fail` mode with nothing stored** (the unconfirmed-200, :492-494,515) |
 | 400 | `{"message": "Block already exists, continue"}` (duplicate key, :510) |
 | 400 | `{"error": "Invalid key format"}` / `{"error": "Invalid salt format"}` / `{"error": "Missing hash_to_verify, key, or account"}` |
 | 401 | `{"message": "Hash does not contain 'm=<N>'. Your memory_cost setting in your miner will be autoadjusted."}` (:416) |
@@ -53,7 +53,7 @@ Exact response strings served (the classifier truth table):
 | | `timeout` | stall `timeout_seconds` before answering (defeats client timeouts) |
 | | `empty-body` | 200 with a zero-length body |
 | | `500` | 500 `{"message": "Internal Server Error"}` on every request |
-| | `insert-fail` | `/verify` returns 200 success **without storing** — `/get_block` will 404 (the lying-200 chaos mode) |
+| | `insert-fail` | `/verify` returns 200 success **without storing** — `/get_block` will 404 (the unconfirmed-200 chaos mode) |
 | | `verify-fail` | `/verify` returns 401 `"Hash verification failed."` |
 | `difficulty` | integer | set current difficulty (drives the 401 difficulty message) |
 | `xuni_window` | `auto` \| `open` \| `closed` | override the `:55–:05` server-clock window (`auto` uses the real local clock, gpage.py:36-40) |

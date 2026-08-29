@@ -316,7 +316,7 @@ class Handler(BaseHTTPRequestHandler):
         is_xen11_present = "XEN11" in tail
         window_open_second_check = False if xuni_race else is_within_five_minutes_of_hour()
 
-        # gpage.py:467-515 — insert, duplicate handling, and the lying-200.
+        # gpage.py:467-515 — insert, duplicate handling, and the unconfirmed-200.
         with LOCK:
             if is_xuni_present and window_open_second_check:
                 table = STATE["xuni"]

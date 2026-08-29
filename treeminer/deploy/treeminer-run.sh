@@ -20,4 +20,5 @@ exec /home/wes/tree_miner/build-sm86-cuda13/bin/xenblocksMiner \
   --dashboard-bind 0.0.0.0 \
   --dashboard-port 42069 \
   --journalPath /home/wes/tree_miner/runtime-live/treeminer-journal.db \
-  --cpuWorkers 0
+  --cpuWorkers 0 \
+  --cudaStreams 2

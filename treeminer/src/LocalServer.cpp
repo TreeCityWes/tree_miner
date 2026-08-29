@@ -74,7 +74,7 @@ std::string buildStatsSnapshot() {
             {"permanently_invalid_total", metrics.permanently_invalid},
             {"confirmation_retries_total", metrics.confirmation_retries},
             {"confirmed_via_lookup_total", metrics.reconciled_via_get_block},
-            {"lying_200_total", metrics.lying_200_detected},
+            {"unconfirmed_200_total", metrics.unconfirmed_200_detected},
             {"difficulty_probes_total", metrics.probes},
             {"failed_attempts_total", failed},
             {"failure_rate_pct", metrics.submitted == 0
