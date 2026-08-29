@@ -1,49 +1,47 @@
 # TreeMiner
 
-**A durability-first GPU miner for [XenBlocks](https://xenblocks.io) (X1 Network).**
+**A GPU miner for [XenBlocks](https://xenblocks.io) (X1 Network).**
 Forked from [woodysoil/XenblocksMiner](https://github.com/woodysoil/XenblocksMiner) (MIT).
 
 ![HashHead Console](docs/img/hashhead-console.png)
 
-Mining networks live in the real world: connections drop, endpoints restart, outages
-happen. Most miners hold found blocks in RAM and give up after a few failed retries —
-so every network interruption silently costs real, already-mined work. TreeMiner treats
-every find as money in hand: it is journaled to durable storage *before* the first
-network attempt, and an outage-aware submission pipeline delivers it when the network
-allows. Nothing is ever silently dropped.
+XenBlocks is a proof-of-work protocol on the X1 Network. Miners compute Argon2id
+hashes whose memory cost `m` is set by the network difficulty; a hash containing the
+`XEN11` pattern is an XNM block (`XEN1111` a super block), and a hash containing `XUNI`
+is a XUNI block, valid only in the :55–:05 window around each hour. Finds are submitted
+to the network verifier over HTTP and credited to the miner's EVM address.
 
-## Highlights
+## Architecture
 
-- **Journal-first durability** — a find is crash-safe on disk (SQLite WAL,
-  `synchronous=FULL`) before any network I/O is attempted. Power loss, crashes, and
-  restarts cannot lose work.
-- **Outage-aware delivery** — a circuit breaker stops submissions the moment the server
-  is unreachable, probes gently for recovery, then drains the queued backlog at a
-  controlled, adaptive rate.
-- **Verified acceptance** — every accepted submission is independently confirmed via
-  `GET /get_block` before it is counted. An acceptance isn't trusted until the record
-  is provably stored.
-- **Full find lifecycle** — nine explicit journal states cover parked difficulty,
-  XUNI submission windows, quarantine, and confirmation, with automatic re-eligibility
-  when conditions change.
-- **Live operations console** — the built-in HashHead web console (screenshot above)
-  serves real-time telemetry per CUDA stream, delivery-channel state, and an exportable
-  runtime profile on `http://<rig>:42069`.
-- **Hardened compute path** — per-stream VRAM budgeting, difficulty-change-safe batch
-  rebuilds, and CUDA 13 support across dual-GPU rigs.
+- **Find journal** — every GPU find is written to a local SQLite journal (WAL,
+  `synchronous=FULL`) before submission, as an immutable PHC-format record of the exact
+  parameters the batch hashed with.
+- **Submission pipeline** — a dedicated thread drains the journal to the verifier
+  through a circuit breaker and an adaptive drain scheduler that paces `/verify`
+  traffic and backs off per response class.
+- **Confirmation** — a 200 on `/verify` marks a find `AcceptedUnconfirmed`; it is only
+  counted as `Acked` after `GET /get_block` returns the stored record.
+- **Find lifecycle** — nine explicit journal states cover pending, parked difficulty,
+  XUNI submission windows, quarantine, confirmation, and terminal outcomes, with
+  automatic re-eligibility when conditions change.
+- **Operations console** — the built-in HashHead web console (screenshot above) serves
+  per-stream CUDA telemetry, delivery-channel state, and an exportable runtime profile
+  on `http://<rig>:42069`.
+- **Compute path** — per-stream VRAM budgeting, difficulty-change-safe batch rebuilds,
+  and CUDA 13 support across multi-GPU rigs.
 
 ## How it works
 
 ```
 GPU find -> immutable PHC capture -> SQLite WAL journal (fsync'd)  ->  SubmissionManager
                                           |                              |  circuit breaker
-                                     survives crashes,              adaptive drain, backoff,
-                                     restarts, outages              /get_block confirmation
+                                     crash-safe storage             adaptive drain, backoff,
+                                                                    /get_block confirmation
 ```
 
-Validated end-to-end: 27 CTest suites, a chaos harness against a protocol-faithful mock
-server with fault injection (60 s hard outage → 13/13 finds recovered and acknowledged),
-and live production mining with server-confirmed XEN11 and XUNI blocks.
+Validated end-to-end: 32 CTest suites, a chaos harness against a protocol-faithful mock
+server with fault injection, and live production mining with server-confirmed XEN11 and
+XUNI blocks.
 
 ## Layout
 
