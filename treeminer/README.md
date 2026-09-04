@@ -1,5 +1,9 @@
 # XenBlocks Mining Platform
 
+For the GPU miner, start with the [project README](../README.md).
+Release [v1.4.1 notes](../CHANGELOG.md) and the
+[CUDA tuning guide](docs/CUDA_TUNING.md) describe the current benchmarking update.
+
 [![Python](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)](https://python.org)
 [![React](https://img.shields.io/badge/React-18-61dafb?logo=react&logoColor=white)](https://react.dev)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-3178c6?logo=typescript&logoColor=white)](https://typescriptlang.org)

@@ -3,7 +3,7 @@
 **Status:** review + plan (not an implementation authority — `treeminer/PLAN.md` still owns the journal/submit contract).
 **Date:** 2026-08-12
 **Tree:** `4034ea1` (`main`, 2 commits ahead of `origin/main`)
-**This box:** 2× RTX 3060 (sm_86), host `nvcc` 11.5, driver NVIDIA 595.84 / CUDA 13.2. Live process is `treeminer.service` (not `xenblocks-pub-miner`). Journal at `runtime-live/`. Host reset storm 2026-08-10–13 — see `docs/09-ops-stability.md` before changing the live miner.
+**Historical scope:** August 2026 CUDA optimization research. Toolchain findings below are historical; see [current tuning guidance](../treeminer/docs/CUDA_TUNING.md) and [operations troubleshooting](09-ops-stability.md) for supported workflows.
 
 This document is Grok’s deep dive after Fabel’s Codex review. Fabel already landed:
 
@@ -171,7 +171,7 @@ The kernel has **no** `__CUDA_ARCH__` specials, no tensor cores, no `cp.async` y
 
 ### 4.2 Honest matrix
 
-| GPU | Kernel source | Current **Linux CI** (`nvidia/cuda:11.8` in `.github/workflows/linux-build.yml`) | **This machine’s** `build-sm86-gcc10` binary |
+| GPU | Kernel source | Historical **Linux CI** (`nvidia/cuda:11.8` in `.github/workflows/linux-build.yml`) | Historical **sm_86 / GCC 10** binary |
 |---|---|---|---|
 | 20-series sm_75 | Fine | Native `75-real` in the GPU-less fat default | **No** — cannot JIT newer PTX |
 | 30-series sm_86 | Fine | Native | **Native** (what we run) |

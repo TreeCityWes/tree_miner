@@ -9,6 +9,50 @@ from types import SimpleNamespace
 import scripts.hash_api_benchmark as benchmark
 
 
+def test_linux_cpu_times_excludes_guest_and_counts_iowait_as_idle(monkeypatch, tmp_path):
+    stat = tmp_path / "stat"
+    stat.write_text("cpu 100 20 30 400 50 6 7 8 80 10\ncpu0 1 2 3 4\n")
+    monkeypatch.setattr(benchmark, "Path", lambda _: stat)
+
+    assert benchmark.read_linux_cpu_times() == (621, 450)
+
+
+def test_linux_environment_reports_normal_and_high_cpu_load(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(benchmark.time, "sleep", lambda _: None)
+    for end_idle, expected_load, expected_trust in [(470, 30.0, "normal"), (409, 91.0, "low")]:
+        samples = iter([(500, 400), (600, end_idle)])
+        monkeypatch.setattr(benchmark, "read_linux_cpu_times", lambda: next(samples))
+
+        result = benchmark.collect_environment_metadata()
+
+        assert result["available"] is True
+        assert result["cpu_load_pct"] == expected_load
+        assert result["benchmark_trust"] == expected_trust
+        assert result["high_cpu_load"] is (expected_trust == "low")
+
+
+def test_linux_environment_rejects_invalid_counter_intervals(monkeypatch):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(benchmark.time, "sleep", lambda _: None)
+    for end in [(500, 400), (499, 400), (600, 399), (600, 501)]:
+        samples = iter([(500, 400), end])
+        monkeypatch.setattr(benchmark, "read_linux_cpu_times", lambda: next(samples))
+        assert benchmark.collect_environment_metadata() == {
+            "available": False, "reason": "cpu_load_unavailable"
+        }
+
+
+def test_linux_environment_handles_unavailable_or_malformed_stat(monkeypatch, tmp_path):
+    monkeypatch.setattr(benchmark.platform, "system", lambda: "Linux")
+    stat = tmp_path / "missing"
+    monkeypatch.setattr(benchmark, "Path", lambda _: stat)
+    assert benchmark.collect_environment_metadata()["available"] is False
+    for contents in ["", "cpu0 1 2 3 4\n", "cpu 1 2 3\n", "cpu 1 2 x 4\n", "cpu -1 2 3 4\n"]:
+        stat.write_text(contents)
+        assert benchmark.collect_environment_metadata()["available"] is False
+
+
 def _summary(hashrate: float, attempts: int = 1, ok: bool = True, timings: dict | None = None, **extra) -> dict:
     summary = {
         "name": "cuda-test",

@@ -119,7 +119,7 @@ NVIDIA build still preprocesses to the upstream kernel (see the ROCm entry below
   only flip `running` (Crow/`cv` from the handler was async-signal-unsafe); dashboard
   thread is joined on shutdown instead of detached; file logger uses `localtime_r`.
 - **CUDA 13 toolchain + GPU first-blocks re-enabled** (`HashApiTypes.h`, `MineUnit.cpp`,
-  build lane `build-sm86-cuda13`): the invalid-digest bug that forced GPU first-blocks OFF
+  CUDA 13 build lane): the invalid-digest bug that forced GPU first-blocks OFF
   (commit `12e241c`) was an **nvcc 11.5 miscompilation**, not a kernel logic error — a
   line-by-line RFC trace found no UB, and the identical kernel built with CUDA 13.3
   matches the CPU reference on real sm_86 hardware and passes live server verification

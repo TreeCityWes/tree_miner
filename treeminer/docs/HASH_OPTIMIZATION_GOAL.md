@@ -1,5 +1,9 @@
 # Long-Running Goal: Optimize Hash API Throughput
 
+This is a maintainer research brief and historical experiment ledger. For the
+current user-facing workflow and September 2026 measurements, see the
+[CUDA tuning guide](CUDA_TUNING.md).
+
 ## Mission
 
 Continuously improve the Xenblocks Hash API hashing throughput until performance gains plateau, correctness risk becomes unacceptable, or the implementation is close enough to the practical hardware limit.
