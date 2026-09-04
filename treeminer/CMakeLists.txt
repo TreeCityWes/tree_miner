@@ -76,9 +76,9 @@ if(XENBLOCKS_BUILD_MINER)
 endif()
 
 if(XENBLOCKS_BUILD_MINER)
-    project(xenblocksMiner LANGUAGES CUDA CXX VERSION 1.0)
+    project(xenblocksMiner LANGUAGES CUDA CXX VERSION 1.4.1)
 else()
-    project(xenblocksMiner LANGUAGES CXX VERSION 1.0)
+    project(xenblocksMiner LANGUAGES CXX VERSION 1.4.1)
 endif()
 
 else() # TREEMINER_GPU_HIP
@@ -130,12 +130,12 @@ if(XENBLOCKS_BUILD_MINER AND NOT DEFINED CMAKE_HIP_ARCHITECTURES)
 endif()
 
 if(XENBLOCKS_BUILD_MINER)
-    project(xenblocksMiner LANGUAGES HIP CXX VERSION 1.0)
+    project(xenblocksMiner LANGUAGES HIP CXX VERSION 1.4.1)
     set(CMAKE_HIP_STANDARD 17)
     set(CMAKE_HIP_STANDARD_REQUIRED ON)
     message(STATUS "TreeMiner HIP architectures: ${CMAKE_HIP_ARCHITECTURES}")
 else()
-    project(xenblocksMiner LANGUAGES CXX VERSION 1.0)
+    project(xenblocksMiner LANGUAGES CXX VERSION 1.4.1)
 endif()
 endif()
 

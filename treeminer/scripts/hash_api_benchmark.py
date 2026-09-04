@@ -592,7 +592,41 @@ def collect_hardware_metadata() -> dict[str, Any]:
     }
 
 
+def read_linux_cpu_times() -> tuple[int, int]:
+    with Path("/proc/stat").open(encoding="ascii") as stat:
+        fields = stat.readline().split()
+    if not fields or fields[0] != "cpu" or len(fields) < 5:
+        raise ValueError("missing aggregate CPU counters")
+    counters = [int(value) for value in fields[1:9]]
+    if any(value < 0 for value in counters):
+        raise ValueError("negative CPU counter")
+    # guest/guest_nice are already included in user/nice; do not count them twice.
+    # Treat iowait as idle, consistent with CPU utilization rather than load average.
+    idle = counters[3] + (counters[4] if len(counters) > 4 else 0)
+    return sum(counters), idle
+
+
 def collect_environment_metadata() -> dict[str, Any]:
+    if platform.system() == "Linux":
+        try:
+            start_total, start_idle = read_linux_cpu_times()
+            time.sleep(0.1)
+            end_total, end_idle = read_linux_cpu_times()
+            total = end_total - start_total
+            idle = end_idle - start_idle
+            if total <= 0 or idle < 0 or idle > total:
+                raise ValueError("invalid CPU counter interval")
+        except (OSError, ValueError):
+            return {"available": False, "reason": "cpu_load_unavailable"}
+        cpu_load_pct = 100.0 * (total - idle) / total
+        high_cpu_load = cpu_load_pct >= 90.0
+        return {
+            "available": True,
+            "cpu_load_pct": cpu_load_pct,
+            "high_cpu_load": high_cpu_load,
+            "benchmark_trust": "low" if high_cpu_load else "normal",
+        }
+
     if platform.system() != "Windows":
         return {
             "available": False,

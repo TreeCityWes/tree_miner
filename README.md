@@ -3,6 +3,10 @@
 **A GPU miner for [XenBlocks](https://xenblocks.io) (X1 Network).**
 Forked from [woodysoil/XenblocksMiner](https://github.com/woodysoil/XenblocksMiner) (MIT).
 
+Current source release: **v1.4.1**. See the [changelog](CHANGELOG.md) and
+[CUDA tuning guide](treeminer/docs/CUDA_TUNING.md) for measured tuning results
+and a reproducible benchmark workflow.
+
 ![HashHead Console](docs/img/hashhead-console.png)
 
 XenBlocks is a proof-of-work protocol on the X1 Network. Miners compute Argon2id
