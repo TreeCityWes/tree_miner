@@ -334,6 +334,7 @@ void SubmissionManager::observeDifficulty(std::uint32_t difficulty) {
             first_observation = true;
         }
         last_difficulty_ = difficulty;
+        difficulty_observed_at_ms_ = mono_();
         new_trend = trend_;
     }
     std::size_t unparked = 0;
@@ -371,6 +372,14 @@ void SubmissionManager::observeDifficulty(std::uint32_t difficulty) {
 std::optional<std::uint32_t> SubmissionManager::lastObservedDifficulty() const {
     std::lock_guard<std::mutex> lk(state_mutex_);
     return last_difficulty_;
+}
+
+std::int64_t SubmissionManager::wire401HoldRemainingMs() const {
+    const std::int64_t until = wire_401_hold_until_ms_.load();
+    if (until == 0) {
+        return 0;
+    }
+    return std::max<std::int64_t>(0, until - mono_());
 }
 
 std::optional<std::int64_t> SubmissionManager::serverClockOffsetMs() const {
@@ -620,6 +629,12 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     if (now_mono < next_submit_allowed_ms_) {
         return StepResult::Idle;
     }
+    // Wire-401 hold: the server just told us a find was below its difficulty. Nothing goes
+    // out until the cooldown ends, so a disagreement between what /difficulty reports and
+    // what /verify enforces can never become a sustained wrong-difficulty stream.
+    if (now_mono < wire_401_hold_until_ms_.load()) {
+        return StepResult::Idle;
+    }
 
     // XUNI window, on the server's clock when we know the offset.
     std::int64_t offset = 0;
@@ -669,6 +684,79 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         return StepResult::Idle;
     }
 
+    // Local park without a submit attempt — shared by the hard floor and the pre-park.
+    auto parkLocally = [&](const std::string& reason, bool floor) {
+        Classification c;
+        c.next_status = FindStatus::ParkedDifficulty;
+        c.reason = reason;
+        journal_.recordAttempt(rec->id, c, std::nullopt, "", std::nullopt, isoUtc(wall_()));
+        emitOutcome_(*rec, c, std::nullopt);
+        ConsoleLog::event(ConsoleLog::Level::Park, "SUBMIT",
+                          std::string(logKind(rec->payload.kind)) + " #" +
+                              std::to_string(rec->id) + " | " + c.reason);
+        std::lock_guard<std::mutex> lk(state_mutex_);
+        ++metrics_.parked_difficulty;
+        if (floor) {
+            ++metrics_.floor_blocked;
+        }
+        return StepResult::Submitted;
+    };
+
+    // Hard floor (Config.min_submit_difficulty): independent of anything the server was
+    // last seen at. Checked first so no observation, however wrong, can let it through.
+    if (cfg_.min_submit_difficulty > 0 &&
+        rec->payload.memory_cost < cfg_.min_submit_difficulty) {
+        return parkLocally("blocked by submit floor: m=" +
+                               std::to_string(rec->payload.memory_cost) + " < configured floor " +
+                               std::to_string(cfg_.min_submit_difficulty) +
+                               " (no submit attempt)",
+                           true);
+    }
+
+    // Freshness (Config.difficulty_max_age_ms): the poller samples every ~10 s, so a find
+    // can be checked against a difficulty the server has already raised. Re-ask when the
+    // observation is stale; the pre-park below then judges the find against the answer.
+    if (cfg_.difficulty_max_age_ms > 0) {
+        std::optional<std::int64_t> observed_at;
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            observed_at = difficulty_observed_at_ms_;
+        }
+        if (!observed_at || now_mono - *observed_at > cfg_.difficulty_max_age_ms) {
+            TransportResult d = transport_.difficulty();
+            trackServerDate_(d);
+            const bool d_ok = d.transport_ok && d.http_status == 200 && !isBlankBody(d.body);
+            if (d_ok) {
+                handleDifficultyBody_(d.body);
+            }
+            bool fresh = false;
+            {
+                std::lock_guard<std::mutex> lk(state_mutex_);
+                ++metrics_.difficulty_refreshes;
+                fresh = difficulty_observed_at_ms_ &&
+                        now_mono - *difficulty_observed_at_ms_ <= cfg_.difficulty_max_age_ms;
+                if (!fresh) {
+                    ++metrics_.difficulty_refresh_failures;
+                }
+            }
+            if (!fresh) {
+                // Unknown difficulty => no submit. A dead /difficulty is the same host as
+                // /verify, so feed the breaker: repeated failures open it and the normal
+                // backed-off probe takes over instead of a 2 s poll forever.
+                if (!d_ok) {
+                    const auto before = breaker_.state();
+                    breaker_.onVerifyTransportFailure();
+                    scheduler_.onThrottle();
+                    logBreakerTransition_(before, breaker_.state(),
+                                          "difficulty refresh failed");
+                    emitNetworkState_();
+                }
+                next_submit_allowed_ms_ = now_mono + cfg_.difficulty_refresh_retry_ms;
+                return StepResult::Idle;
+            }
+        }
+    }
+
     // Pre-park (Config.pre_park_below_difficulty): skip the guaranteed-401 round trip for
     // any find mined below the observed floor — XUNI included, since the server rejects on
     // difficulty before the window check. A sustained wrong-difficulty stream is abuse from
@@ -676,20 +764,11 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
     if (cfg_.pre_park_below_difficulty) {
         const std::optional<std::uint32_t> known = lastObservedDifficulty();
         if (known && rec->payload.memory_cost < *known) {
-            Classification c;
-            c.next_status = FindStatus::ParkedDifficulty;
-            c.reason = "pre-parked locally: m=" + std::to_string(rec->payload.memory_cost) +
-                       " < server difficulty " + std::to_string(*known) +
-                       " (no submit attempt; releases when difficulty falls to m)";
-            journal_.recordAttempt(rec->id, c, std::nullopt, "", std::nullopt,
-                                   isoUtc(wall_()));
-            emitOutcome_(*rec, c, std::nullopt);
-            ConsoleLog::event(ConsoleLog::Level::Park, "SUBMIT",
-                              std::string(logKind(rec->payload.kind)) + " #" +
-                                  std::to_string(rec->id) + " | " + c.reason);
-            std::lock_guard<std::mutex> lk(state_mutex_);
-            ++metrics_.parked_difficulty;
-            return StepResult::Submitted;
+            return parkLocally("pre-parked locally: m=" +
+                                   std::to_string(rec->payload.memory_cost) +
+                                   " < server difficulty " + std::to_string(*known) +
+                                   " (no submit attempt; releases when difficulty falls to m)",
+                               false);
         }
     }
 
@@ -718,6 +797,44 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
         if (cb) {
             cb(*c.server_difficulty_hint);
         }
+    }
+
+    // Wire 401 "difficulty too low": this one REACHED the server. Count it apart from local
+    // parks and start (or extend) the submission hold. An UNRECOGNIZED 401 (quarantined) gets
+    // the same hold: we cannot tell what the server objected to, so we stop and re-ask
+    // /difficulty before sending anything else.
+    const bool wire_difficulty_401 = res.transport_ok && res.http_status == 401 &&
+                                     c.next_status == FindStatus::ParkedDifficulty;
+    const bool wire_unknown_401 = res.transport_ok && res.http_status == 401 &&
+                                  c.next_status == FindStatus::Quarantined;
+    if (wire_difficulty_401 || wire_unknown_401) {
+        ++consecutive_wire_401_;
+        std::int64_t hold_ms = 0;
+        if (cfg_.wire_401_cooldown_ms > 0) {
+            hold_ms = cfg_.wire_401_cooldown_ms;
+            for (std::int32_t i = 1; i < consecutive_wire_401_ &&
+                                     hold_ms < cfg_.wire_401_cooldown_cap_ms; ++i) {
+                hold_ms *= 2;
+            }
+            hold_ms = std::min(hold_ms, cfg_.wire_401_cooldown_cap_ms);
+            wire_401_hold_until_ms_.store(now_mono + hold_ms);
+        }
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            if (wire_difficulty_401) {
+                ++metrics_.wire_difficulty_401;
+            }
+            if (!c.server_difficulty_hint) {
+                difficulty_observed_at_ms_.reset();
+            }
+        }
+        ConsoleLog::event(ConsoleLog::Level::Warn, "GUARD",
+                          std::string(wire_difficulty_401 ? "wire difficulty 401 #"
+                                                          : "unrecognized wire 401 #") +
+                              std::to_string(consecutive_wire_401_) +
+                              " in a row (m=" + std::to_string(rec->payload.memory_cost) +
+                              ") — all submissions held for " +
+                              std::to_string(hold_ms / 1000) + "s");
     }
 
     // Confirmation-aware acks: 200 and duplicates are only Acked once /get_block agrees —
@@ -835,6 +952,7 @@ SubmissionManager::StepResult SubmissionManager::submitStep_() {
                           c.next_status == FindStatus::AcceptedUnconfirmed;
     const auto breaker_before_outcome = breaker_.state();
     if (accepted) {
+        consecutive_wire_401_ = 0;
         breaker_.onVerifySuccess();
         if (was_closed) {
             scheduler_.onHealthyRoundTrip();

@@ -76,6 +76,11 @@ std::string buildStatsSnapshot() {
             {"confirmed_via_lookup_total", metrics.reconciled_via_get_block},
             {"unconfirmed_200_total", metrics.unconfirmed_200_detected},
             {"difficulty_probes_total", metrics.probes},
+            {"wire_difficulty_401_total", metrics.wire_difficulty_401},
+            {"floor_blocked_total", metrics.floor_blocked},
+            {"difficulty_refreshes_total", metrics.difficulty_refreshes},
+            {"difficulty_refresh_failures_total", metrics.difficulty_refresh_failures},
+            {"wire_401_hold_remaining_ms", s_submission_manager->wire401HoldRemainingMs()},
             {"failed_attempts_total", failed},
             {"failure_rate_pct", metrics.submitted == 0
                                      ? 0.0

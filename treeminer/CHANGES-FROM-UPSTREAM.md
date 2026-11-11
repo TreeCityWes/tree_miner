@@ -212,3 +212,13 @@ NVIDIA build still preprocesses to the upstream kernel (see the ROCm entry below
   in Cargo tests. `--features cuda` is the GPU canary (`mine --backend cuda --donotupload`
   on a separate journal). HTTP via `std::net` (not cpr/ureq); config.txt + argv without Boost;
   no Crow/TUI FFI. Live GPU process stays `xenblocksMiner`. Not wired into systemd.
+- **Wrong-difficulty guard** (`src/submit/SubmissionManager`, council review 2026-11): three
+  gates in front of every `/verify`, because the pool operator bans addresses that sustain
+  wrong-difficulty submissions. (1) Hard floor `--minSubmitDifficulty` (default 10000, 0
+  disables): a find below it is parked locally and never sent, whatever was last observed.
+  (2) Freshness: an observation older than 3 s triggers `GET /difficulty` before the submit;
+  a failed refresh means no submit. (3) Hold: a wire 401 "difficulty too low", or any
+  unrecognized 401, pauses all submissions for 60 s, doubling per consecutive 401 up to 1 h,
+  reset by an accepted submit. `/stats` gains `wire_difficulty_401_total`,
+  `floor_blocked_total`, `difficulty_refreshes_total`, `difficulty_refresh_failures_total`
+  and `wire_401_hold_remaining_ms` under `submissions`.

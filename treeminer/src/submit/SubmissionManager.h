@@ -91,6 +91,26 @@ public:
         // stream reads as abuse to the server. unparkForDifficulty() releases them the
         // moment the floor falls to m (boundary inclusive).
         bool pre_park_below_difficulty = false;
+
+        // --- wrong-difficulty guard (council review 2026-11) ---
+        // The pool operator bans addresses that sustain wrong-difficulty submissions, so
+        // these gates sit in front of every /verify. All default off (0) so the manager
+        // behaves exactly as before unless the integration owner opts in.
+        //
+        // Hard floor: a find with m below this is NEVER submitted, whatever the server was
+        // last seen at (a missing, stale or garbled observation must not open the gate).
+        std::uint32_t min_submit_difficulty = 0;
+        // Freshness: if the last difficulty observation is older than this (or absent),
+        // GET /difficulty before submitting and re-check the find against the answer. A
+        // failed refresh means no submit this step.
+        std::int64_t difficulty_max_age_ms = 0;
+        std::int64_t difficulty_refresh_retry_ms = 2000;  // wait after a failed refresh
+        // Hold: after a wire 401 "difficulty too low" pause ALL submissions for this long,
+        // doubling on each consecutive wire 401 (reset by an accepted submit). This bounds
+        // the worst case — /difficulty and /verify disagreeing — to a trickle instead of a
+        // stream.
+        std::int64_t wire_401_cooldown_ms = 0;
+        std::int64_t wire_401_cooldown_cap_ms = 3600000;
     };
 
     enum class StepResult {
@@ -163,6 +183,8 @@ public:
     void setMarginCallback(std::function<void(std::uint32_t)> cb);
     // Headroom in KiB currently in effect. Safe to read from any thread.
     std::uint32_t marginInEffect() const { return margin_kib_.load(); }
+    // Milliseconds left on the wire-401 submission hold, or 0 when not holding. Any thread.
+    std::int64_t wire401HoldRemainingMs() const;
     // Milliseconds the /verify path has been OPEN, or 0 when it is not. Any thread.
     std::int64_t outageDurationMs() const;
     // Span of the most recent Open period. Survives HalfOpen/Closed so the glance line
@@ -188,6 +210,11 @@ public:
         std::uint64_t permanently_invalid = 0;
         std::uint64_t transport_failures = 0;
         std::uint64_t probes = 0;
+        std::uint64_t floor_blocked = 0;            // parked by min_submit_difficulty, no submit
+        std::uint64_t difficulty_refreshes = 0;     // pre-submit GET /difficulty issued
+        std::uint64_t difficulty_refresh_failures = 0;
+        std::uint64_t wire_difficulty_401 = 0;      // 401 "difficulty too low" that REACHED
+                                                    // the server (distinct from local parks)
         std::uint64_t margin_changes = 0;       // headroom ramp steps taken (PLAN §10.7)
         std::uint64_t confirm_body_rejected = 0;  // /get_block 200s whose body failed
                                                   // validation (finding 4): malformed,
@@ -249,6 +276,11 @@ private:
     DifficultyTrend trend_ = DifficultyTrend::Unknown;
     std::optional<std::int64_t> server_offset_ms_;
     std::int64_t next_submit_allowed_ms_ = 0;
+    // Monotonic time of the last difficulty observation; guarded by state_mutex_ (the
+    // poller thread observes too). Cleared to force a refresh before the next submit.
+    std::optional<std::int64_t> difficulty_observed_at_ms_;
+    std::atomic<std::int64_t> wire_401_hold_until_ms_{0};
+    std::int32_t consecutive_wire_401_ = 0;  // submission thread only
     bool last_window_open_ = false;
 
     // Margin state. margin_kib_ is atomic because the mine loop reads it on every batch.
