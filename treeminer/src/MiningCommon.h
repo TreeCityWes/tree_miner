@@ -162,6 +162,10 @@ struct gpuInfo
 	std::string power;
 	size_t hashCount;
 	int streamIndex = 0;
+	// Rate over the last ~60 s (treeminer::RollingRate). `hashrate` above is the since-start
+	// average and cannot show a recent drop; this can. Equal to `hashrate` until the window
+	// has enough history.
+	float recentHashrate = 0.0f;
 };
 extern std::map<int, std::pair<gpuInfo, std::chrono::steady_clock::time_point>> globalGpuInfos;
 extern std::mutex globalGpuInfosMutex;
@@ -180,6 +184,11 @@ struct TreeminerStats {
 	std::size_t pending = 0, parked = 0, quarantined = 0;
 	std::size_t acked_total = 0, dead_total = 0;
 	std::size_t accepted_unconfirmed = 0, permanently_invalid = 0;
+	// Terminal outcomes of finds FOUND in the last `window_days` days. The lifetime totals
+	// above keep every row ever retired, so a ratio over them never recovers from one bad
+	// week; the windowed counts describe how the rig is doing now.
+	int window_days = 7;
+	std::size_t window_acked = 0, window_dead = 0, window_permanently_invalid = 0;
 };
 // Set by main() once the journal and submitter exist; empty until then (the stats endpoint
 // starts before mining does). Returns false when the submission layer is not running.

@@ -105,6 +105,14 @@ public:
     // accepted_unconfirmed=AcceptedUnconfirmed and permanently_invalid=PermanentlyInvalid.
     Counts counts() override;
 
+    // Terminal outcomes of finds whose found_at is at or after `since_utc` (ISO-8601 UTC,
+    // the format found_at is stored in). Feeds the windowed accepted-yield on /stats; not
+    // part of IFindJournal because only the stats path wants it.
+    struct WindowOutcomes {
+        std::size_t acked = 0, dead = 0, permanently_invalid = 0;
+    };
+    WindowOutcomes outcomesSince(const std::string& since_utc);
+
 private:
     void applyPragmas();
     void ensureSchema();

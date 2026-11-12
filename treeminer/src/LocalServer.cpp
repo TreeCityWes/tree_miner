@@ -81,6 +81,16 @@ std::string buildStatsSnapshot() {
             {"difficulty_refreshes_total", metrics.difficulty_refreshes},
             {"difficulty_refresh_failures_total", metrics.difficulty_refresh_failures},
             {"wire_401_hold_remaining_ms", s_submission_manager->wire401HoldRemainingMs()},
+            // failure_rate_pct counts pool outages and local parks as failures, so it reads
+            // high on a healthy rig. server_rejection_rate_pct is only what the server
+            // actually refused.
+            {"server_rejection_rate_pct",
+             metrics.submitted == 0
+                 ? 0.0
+                 : 100.0 * static_cast<double>(metrics.wire_difficulty_401 +
+                                               metrics.quarantined +
+                                               metrics.permanently_invalid) /
+                       static_cast<double>(metrics.submitted)},
             {"failed_attempts_total", failed},
             {"failure_rate_pct", metrics.submitted == 0
                                      ? 0.0

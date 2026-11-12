@@ -597,4 +597,22 @@ IFindJournal::Counts FindJournal::counts() {
     return result;
 }
 
+FindJournal::WindowOutcomes FindJournal::outcomesSince(const std::string& since_utc) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    WindowOutcomes result;
+    Statement select(db_, "SELECT status, COUNT(*) FROM finds WHERE found_at >= ?1 "
+                          "GROUP BY status;");
+    select.bindText(1, since_utc);
+    while (select.step()) {
+        const auto count = static_cast<std::size_t>(select.columnInt64(1));
+        switch (statusFromString(select.columnText(0))) {
+            case FindStatus::Acked:              result.acked += count; break;
+            case FindStatus::Dead:               result.dead += count; break;
+            case FindStatus::PermanentlyInvalid: result.permanently_invalid += count; break;
+            default: break;
+        }
+    }
+    return result;
+}
+
 }  // namespace treeminer

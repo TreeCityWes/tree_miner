@@ -34,6 +34,7 @@
 #include "PlatformManager.h"
 #include "ProcessMonitor.h"
 #include "DifficultyManager.h"
+#include "treeminer/RollingRate.h"
 #include "treeminer/PhcAssembler.h"
 #include "journal/FallbackSink.h"
 #include "journal/FindJournal.h"
@@ -975,6 +976,15 @@ int main(int argc, const char *const *argv)
             out.dead_total = counts.dead_total;
             out.accepted_unconfirmed = counts.accepted_unconfirmed;
             out.permanently_invalid = counts.permanently_invalid;
+            const std::int64_t window_start_ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch()).count() -
+                static_cast<std::int64_t>(out.window_days) * 86400000LL;
+            const treeminer::FindJournal::WindowOutcomes recent = journal.outcomesSince(
+                treeminer::SubmissionManager::isoUtc(window_start_ms));
+            out.window_acked = recent.acked;
+            out.window_dead = recent.dead;
+            out.window_permanently_invalid = recent.permanently_invalid;
             return true;
         };
         globalSubmissionLineStatsProvider = [&manager = *submissionManager](SubmissionLineStats& out) {
@@ -1171,12 +1181,21 @@ int main(int argc, const char *const *argv)
     std::unique_ptr<treeminer::CpuMiningWorker> cpuMiningWorker;
     std::unique_ptr<treeminer::TerminalUi> terminalUi;
 
-    StatCallback statCallback = [&cpuMiningWorker, &terminalUi](const gpuInfo gpuinfo)
+    // Per-stream rolling window; guarded by globalGpuInfosMutex like the map it feeds.
+    std::map<int, treeminer::RollingRate> recentRates;
+    StatCallback statCallback = [&cpuMiningWorker, &terminalUi, &recentRates](gpuInfo gpuinfo)
     {
         {
             std::lock_guard<std::mutex> lock(globalGpuInfosMutex);
             const int statsKey = gpuinfo.index * 16 + gpuinfo.streamIndex;
-            globalGpuInfos[statsKey] = {gpuinfo, std::chrono::steady_clock::now()};
+            const auto nowSteady = std::chrono::steady_clock::now();
+            treeminer::RollingRate& recent = recentRates[statsKey];
+            recent.add(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           nowSteady.time_since_epoch()).count(),
+                       static_cast<std::uint64_t>(gpuinfo.hashCount));
+            gpuinfo.recentHashrate =
+                static_cast<float>(recent.rate().value_or(gpuinfo.hashrate));
+            globalGpuInfos[statsKey] = {gpuinfo, nowSteady};
         }
         int difficulty = 40404;
         {
