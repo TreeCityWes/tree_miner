@@ -282,6 +282,205 @@ int main() {
         CHECK(outcomes.front() == FindStatus::ParkedDifficulty);
     }
 
+    // --- wrong-difficulty guard (council review 2026-11) ---
+    const char* k401Low =
+        R"({"message": "Hash does not contain 'm=11000'. Your memory_cost setting in your miner will be autoadjusted."})";
+    const char* k401NoHint = R"({"message": "address temporarily blocked"})";
+
+    TEST_CASE("guard: a find below the hard floor is never submitted, with or without an observation");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.min_submit_difficulty = 10000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        auto low = j.append(payload("f100", FindKind::XEN11, 9999));
+        CHECK(m.runOnce() == StepResult::Submitted);  // no observation at all
+        CHECK(j.record(low).status == FindStatus::ParkedDifficulty);
+        // A (wrong) low observation must not reopen the gate either.
+        m.observeDifficulty(100);
+        clk.advance(5000);
+        m.runOnce();
+        CHECK(j.record(low).status == FindStatus::ParkedDifficulty);
+        CHECK(t.submitted_keys.empty());
+        CHECK_EQ(m.metrics().floor_blocked, static_cast<std::uint64_t>(2));
+        // At the floor exactly is allowed through.
+        auto at = j.append(payload("f101", FindKind::XEN11, 10000));
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(j.record(at).payload)));
+        clk.advance(5000);
+        m.runOnce();
+        CHECK(j.record(at).status == FindStatus::Acked);
+        CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
+    }
+
+    TEST_CASE("guard: a stale observation is refreshed and a raised difficulty parks the find unsent");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.pre_park_below_difficulty = true;
+        cfg.difficulty_max_age_ms = 3000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        m.observeDifficulty(10000);
+        clk.advance(8000);  // the poller's sample is now 8 s old; the server moved to 11000
+        auto id = j.append(payload("f200", FindKind::XEN11, 10000));
+        t.difficulty_queue.push_back(ok(200, R"({"difficulty": "11000"})"));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK_EQ(t.difficulty_calls, 1);
+        CHECK(t.submitted_keys.empty());  // the Nov 1 case: nothing reaches the server
+        CHECK(j.record(id).status == FindStatus::ParkedDifficulty);
+        CHECK_EQ(m.lastObservedDifficulty().value_or(0), 11000u);
+        CHECK_EQ(m.metrics().wire_difficulty_401, static_cast<std::uint64_t>(0));
+    }
+
+    TEST_CASE("guard: a fresh observation submits without an extra /difficulty call");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.pre_park_below_difficulty = true;
+        cfg.difficulty_max_age_ms = 3000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        m.observeDifficulty(10000);
+        clk.advance(1000);
+        auto id = j.append(payload("f300", FindKind::XEN11, 10000));
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(j.record(id).payload)));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK_EQ(t.difficulty_calls, 0);
+        CHECK(j.record(id).status == FindStatus::Acked);
+    }
+
+    TEST_CASE("guard: a failed refresh means no submit, and the find stays Pending");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.difficulty_max_age_ms = 3000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        auto id = j.append(payload("f400", FindKind::XEN11, 10000));
+        CHECK(m.runOnce() == StepResult::Idle);  // difficulty_queue empty => transport down
+        CHECK(t.submitted_keys.empty());
+        CHECK(j.record(id).status == FindStatus::Pending);
+        CHECK_EQ(m.metrics().difficulty_refresh_failures, static_cast<std::uint64_t>(1));
+        CHECK(m.runOnce() == StepResult::Idle);  // retry gate: no second GET yet
+        CHECK_EQ(t.difficulty_calls, 1);
+        // Garbage 200 is not an observation either.
+        clk.advance(2500);
+        t.difficulty_queue.push_back(ok(200, "<html>captive portal</html>"));
+        m.runOnce();
+        CHECK(t.submitted_keys.empty());
+        // A real answer releases it.
+        clk.advance(2500);
+        t.difficulty_queue.push_back(ok(200, R"({"difficulty": "10000"})"));
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(j.record(id).payload)));
+        m.runOnce();
+        CHECK(j.record(id).status == FindStatus::Acked);
+    }
+
+    TEST_CASE("guard: a wire 401 holds ALL submissions, doubling on repeats, reset by an ack");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.wire_401_cooldown_ms = 60000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        auto a = j.append(payload("f500", FindKind::XEN11, 10000));
+        auto b = j.append(payload("f501", FindKind::XEN11, 20000));
+        auto c2 = j.append(payload("f502", FindKind::XEN11, 20000));
+        auto d = j.append(payload("f503", FindKind::XEN11, 20000));
+        t.submit_queue.push_back(ok(401, k401Low));
+        CHECK(m.runOnce() == StepResult::Submitted);
+        CHECK(j.record(a).status == FindStatus::ParkedDifficulty);
+        CHECK_EQ(m.metrics().wire_difficulty_401, static_cast<std::uint64_t>(1));
+        CHECK(m.wire401HoldRemainingMs() == 60000);
+        // During the hold nothing is sent, even a find far above any plausible difficulty.
+        clk.advance(59000);
+        CHECK(m.runOnce() == StepResult::Idle);
+        CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
+        // Hold over: the next one goes out; a second 401 in a row doubles the hold.
+        clk.advance(1000);
+        t.submit_queue.push_back(ok(401, k401Low));
+        m.runOnce();
+        CHECK(j.record(b).status == FindStatus::ParkedDifficulty);
+        CHECK(m.wire401HoldRemainingMs() == 120000);
+        clk.advance(119000);
+        CHECK(m.runOnce() == StepResult::Idle);
+        clk.advance(1000);
+        t.submit_queue.push_back(ok(200, kOk200));
+        t.confirm_queue.push_back(ok(200, blockRow(j.record(c2).payload)));
+        m.runOnce();
+        CHECK(j.record(c2).status == FindStatus::Acked);
+        CHECK(m.wire401HoldRemainingMs() == 0);
+        // The ack reset the streak: the next 401 holds for the base 60 s again.
+        clk.advance(5000);
+        t.submit_queue.push_back(ok(401, k401Low));
+        m.runOnce();
+        CHECK(j.record(d).status == FindStatus::ParkedDifficulty);
+        CHECK(m.wire401HoldRemainingMs() == 60000);
+        CHECK_EQ(m.metrics().wire_difficulty_401, static_cast<std::uint64_t>(3));
+    }
+
+    TEST_CASE("guard: an unrecognized wire 401 holds and forces a /difficulty refresh");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.pre_park_below_difficulty = true;
+        cfg.difficulty_max_age_ms = 3000;
+        cfg.wire_401_cooldown_ms = 60000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        m.observeDifficulty(10000);
+        auto a = j.append(payload("f600", FindKind::XEN11, 10000));
+        auto b = j.append(payload("f601", FindKind::XEN11, 10000));
+        t.submit_queue.push_back(ok(401, k401NoHint));
+        m.runOnce();
+        CHECK(j.record(a).status == FindStatus::Quarantined);
+        CHECK(m.wire401HoldRemainingMs() == 60000);
+        CHECK_EQ(m.metrics().wire_difficulty_401, static_cast<std::uint64_t>(0));
+        clk.advance(60000);
+        t.difficulty_queue.push_back(ok(200, R"({"difficulty": "12000"})"));
+        m.runOnce();
+        CHECK_EQ(t.difficulty_calls, 1);
+        CHECK(j.record(b).status == FindStatus::ParkedDifficulty);  // parked locally, unsent
+        CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));
+    }
+
+    TEST_CASE("guard: a 401 with an m= hint parks the rest locally (the Nov 1 excursion)");
+    {
+        FakeJournal j;
+        FakeTransport t;
+        Clocks clk;
+        auto cfg = testConfig();
+        cfg.pre_park_below_difficulty = true;
+        cfg.min_submit_difficulty = 10000;
+        cfg.wire_401_cooldown_ms = 60000;
+        SubmissionManager m(j, t, cfg, [&] { return clk.mono; }, [&] { return clk.wall; });
+        m.observeDifficulty(10000);
+        auto a = j.append(payload("f700", FindKind::XEN11, 10000));
+        auto b = j.append(payload("f701", FindKind::XEN11, 10000));
+        t.submit_queue.push_back(ok(401, k401Low));
+        m.runOnce();
+        CHECK(j.record(a).status == FindStatus::ParkedDifficulty);
+        CHECK_EQ(m.lastObservedDifficulty().value_or(0), 11000u);
+        clk.advance(61000);
+        m.runOnce();
+        CHECK(j.record(b).status == FindStatus::ParkedDifficulty);
+        CHECK_EQ(t.submitted_keys.size(), static_cast<std::size_t>(1));  // exactly one on the wire
+        // Difficulty falls back: both release and drain.
+        m.observeDifficulty(10000);
+        CHECK(j.record(a).status == FindStatus::Pending);
+        CHECK(j.record(b).status == FindStatus::Pending);
+    }
+
     // --- 429 Retry-After drives next_attempt_at ---
     TEST_CASE("429 Retry-After is honored in next_attempt_at");
     {

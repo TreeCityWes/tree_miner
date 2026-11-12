@@ -67,6 +67,9 @@ std::unique_ptr<PlatformManager> globalPlatformManager;
 // Difficulty-headroom policy, resolved from config.txt + command line before mining starts
 // and handed to the SubmissionManager, which owns the ramp (PLAN §5, §10.7).
 static treeminer::MarginConfig globalMarginConfig;
+// Hard submit floor (--minSubmitDifficulty). Defaults to the pool's operator-locked minimum:
+// finds below it are parked locally and never sent. 0 disables the floor.
+static std::uint32_t globalMinSubmitDifficulty = 10000;
 
 // Journal database path (PLAN §5 `journal_path`), resolved from config.txt + command line.
 // The default is CWD-relative for drop-in compatibility with existing deployments, but the
@@ -249,6 +252,7 @@ int main(int argc, const char *const *argv)
             ("testFixedDiff", po::value<int>(), "run in test mode with a fixed difficulty")
             ("lockMiningDiff", po::value<int>(), "mine every block at this fixed memory cost; finds park until the server difficulty falls to or below it (submissions stay live, margin ignored)")
             ("lockLiveLanes", po::value<int>(), "with --lockMiningDiff: this many CUDA streams per card keep mining at the LIVE difficulty; the rest mine the lock (default 0 = all locked)")
+            ("minSubmitDifficulty", po::value<int>(), "never submit a find mined below this memory cost (default 10000, the pool floor; 0 disables)")
             ("rpcLink", po::value<std::string>(), "set rpc link")
             ("customName", po::value<std::string>(), "set custom name")
             ("platform-mode", "enable hashpower marketplace platform mode")
@@ -376,6 +380,17 @@ int main(int argc, const char *const *argv)
                     globalDifficultyMargin = static_cast<int>(globalMarginConfig.margin_kib);
                 }
                 std::cout << std::endl;
+            }
+
+            // --- hard submit floor ---
+            if (vm.count("minSubmitDifficulty")) {
+                const int floorValue = vm["minSubmitDifficulty"].as<int>();
+                if (floorValue < 0 || floorValue > 100000000) {
+                    std::cerr << "Invalid --minSubmitDifficulty value '" << floorValue
+                              << "' (expected 0-100000000; 0 disables)." << std::endl;
+                    return -1;
+                }
+                globalMinSubmitDifficulty = static_cast<std::uint32_t>(floorValue);
             }
 
             // --- mining difficulty lock ---
@@ -833,6 +848,12 @@ int main(int argc, const char *const *argv)
         // unparkForDifficulty release it when the floor falls back. Always on: the poller
         // keeps the observation fresh, so skipping the round trip loses only the 401's hint.
         submitConfig.pre_park_below_difficulty = true;
+        // Wrong-difficulty guard: the operator bans sustained wrong-difficulty submitters.
+        // Never submit below the pool floor, re-ask /difficulty when the poller's sample is
+        // more than 3 s old, and hold everything for 60 s (doubling) after a wire 401.
+        submitConfig.min_submit_difficulty = globalMinSubmitDifficulty;
+        submitConfig.difficulty_max_age_ms = 3000;
+        submitConfig.wire_401_cooldown_ms = 60000;
         submissionManager = std::make_unique<treeminer::SubmissionManager>(
             *findJournal, *findTransport, submitConfig);
         // The drain thread's own unrecoverable-journal detection converges on the SAME fatal
