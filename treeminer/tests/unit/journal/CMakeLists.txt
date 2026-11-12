@@ -65,6 +65,7 @@ set(TREEMINER_JOURNAL_TEST_CASES
     get_by_id_hit_and_miss
     difficulty_seen_round_trip
     reopen_persistence
+    outcomes_since_window
 )
 foreach(case IN LISTS TREEMINER_JOURNAL_TEST_CASES)
     add_test(NAME journal.${case} COMMAND treeminer_journal_tests ${case})

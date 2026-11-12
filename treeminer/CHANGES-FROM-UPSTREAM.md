@@ -222,3 +222,11 @@ NVIDIA build still preprocesses to the upstream kernel (see the ROCm entry below
   reset by an accepted submit. `/stats` gains `wire_difficulty_401_total`,
   `floor_blocked_total`, `difficulty_refreshes_total`, `difficulty_refresh_failures_total`
   and `wire_401_hold_remaining_ms` under `submissions`.
+- **Recent hashrate and windowed yield** (council review 2026-11): `treeminer::RollingRate`
+  (`src/treeminer/RollingRate.h`) tracks each stream's rate over the last 60 s. `/api/rig`
+  `hashrate` / `total_hashrate` / `gpu_hashrate` now report that recent rate, with the
+  since-start figure under `average_hashrate`; `/stats` adds `recentHashrate` (top level and
+  per stream) and drops streams silent for 2 minutes. `acceptedYieldRatio` covers finds found
+  in the last 7 days (`FindJournal::outcomesSince`), with the old all-time figure under
+  `acceptedYieldRatioLifetime`. `submissions.server_rejection_rate_pct` counts only what the
+  server actually refused.

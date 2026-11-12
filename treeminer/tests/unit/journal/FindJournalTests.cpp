@@ -673,6 +673,41 @@ TEST_CASE(reopen_persistence) {
 // Runner: no arguments = all tests; otherwise each argument names one test (CTest mode).
 // ---------------------------------------------------------------------------------------
 
+TEST_CASE(outcomes_since_window) {
+    // The windowed yield must ignore old retired rows: 3 Dead from August and 1 Acked from
+    // August sit outside a window that starts in November.
+    TempDb tmp("outcomes_since_window");
+    FindJournal journal(tmp.path);
+    const auto put = [&](const std::string& suffix, FindStatus status,
+                         const std::string& found_at) {
+        FoundPayload p = makePayload(suffix);
+        p.found_at_utc = found_at;
+        const std::int64_t id = journal.append(p);
+        journal.recordAttempt(id, classify(status, "test"), std::nullopt, "", std::nullopt,
+                              kNow);
+    };
+    put("a1", FindStatus::Dead, "2026-08-25T10:00:00Z");
+    put("a2", FindStatus::Dead, "2026-08-26T10:00:00Z");
+    put("a3", FindStatus::Dead, "2026-08-27T10:00:00Z");
+    put("a4", FindStatus::Acked, "2026-08-27T11:00:00Z");
+    put("b1", FindStatus::Acked, "2026-11-05T00:00:00Z");  // boundary: inclusive
+    put("b2", FindStatus::Acked, "2026-11-08T09:30:00Z");
+    put("b3", FindStatus::Dead, "2026-11-09T09:30:00Z");
+    put("b4", FindStatus::ParkedDifficulty, "2026-11-10T09:30:00Z");  // not terminal
+
+    const FindJournal::WindowOutcomes recent = journal.outcomesSince("2026-11-05T00:00:00Z");
+    CHECK_EQ(recent.acked, 2u);
+    CHECK_EQ(recent.dead, 1u);
+    CHECK_EQ(recent.permanently_invalid, 0u);
+
+    const FindJournal::WindowOutcomes all = journal.outcomesSince("2000-01-01T00:00:00Z");
+    CHECK_EQ(all.acked, 3u);
+    CHECK_EQ(all.dead, 4u);
+
+    const FindJournal::WindowOutcomes none = journal.outcomesSince("2027-01-01T00:00:00Z");
+    CHECK_EQ(none.acked + none.dead + none.permanently_invalid, 0u);
+}
+
 int main(int argc, char** argv) {
     std::vector<std::string> selected;
     if (argc > 1) {

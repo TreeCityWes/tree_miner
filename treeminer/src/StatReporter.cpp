@@ -97,17 +97,30 @@ std::string getGpuStatsJson() {
     auto now = std::chrono::system_clock::now();
     auto uptime = std::chrono::duration_cast<std::chrono::seconds>(now - start_time).count();
 
+    // A stream that stopped reporting keeps its last (average) rate in the map forever;
+    // counting it would hide exactly the failure this endpoint exists to show.
+    const auto nowSteady = std::chrono::steady_clock::now();
+    float recentHashrate = 0.0;
     for (const auto& gpuInfoPair : gpuInfos) {
+        if (nowSteady - gpuInfoPair.second.second > std::chrono::minutes(2)) {
+            continue;
+        }
         const auto& gpuInfo = gpuInfoPair.second.first;
         nlohmann::json gpuJson;
         gpuJson["index"] = gpuInfo.index;
+        gpuJson["stream"] = gpuInfo.streamIndex;
         gpuJson["hashrate"] = gpuInfo.hashrate;
+        gpuJson["recentHashrate"] = gpuInfo.recentHashrate;
         gpuJson["busId"] = gpuInfo.busId;
         totalHashrate += gpuInfo.hashrate;
+        recentHashrate += gpuInfo.recentHashrate;
         gpuArray.push_back(gpuJson);
     }
 
+    // totalHashrate stays the since-start average (upstream contract); recentHashrate is
+    // the last ~60 s and is the one to watch.
     result["totalHashrate"] = totalHashrate;
+    result["recentHashrate"] = recentHashrate;
     result["gpus"] = gpuArray;
     result["uptime"] = uptime;
     result["acceptedBlocks"] = globalNormalBlockCount.load() + globalSuperBlockCount.load();
@@ -137,19 +150,31 @@ std::string getGpuStatsJson() {
         journal["permanentlyInvalid"] = tm.permanently_invalid;
         result["journal"] = journal;
 
-        result["rawHashrate"] = totalHashrate;
+        result["rawHashrate"] = recentHashrate;
         // Resolved = reached a terminal state. In-flight finds are excluded rather than
         // counted as losses, so the ratio does not dip merely because a drain is in progress.
-        const std::size_t resolved = tm.acked_total + tm.dead_total + tm.permanently_invalid;
+        //
+        // The headline ratio covers finds FOUND in the last window_days. A lifetime ratio
+        // keeps every row ever retired (one stockpile week pinned it at 0.81 for months), so
+        // it is reported separately as acceptedYieldRatioLifetime.
+        const std::size_t resolved =
+            tm.window_acked + tm.window_dead + tm.window_permanently_invalid;
+        result["acceptedYieldWindowDays"] = tm.window_days;
         if (resolved > 0) {
-            const double ratio = static_cast<double>(tm.acked_total) / static_cast<double>(resolved);
+            const double ratio = static_cast<double>(tm.window_acked) / static_cast<double>(resolved);
             result["acceptedYieldRatio"] = ratio;
-            result["acceptedYieldHashrate"] = totalHashrate * ratio;
+            result["acceptedYieldHashrate"] = recentHashrate * ratio;
         } else {
             // No find has resolved yet: report unknown rather than an implied 0% or 100%.
             result["acceptedYieldRatio"] = nullptr;
             result["acceptedYieldHashrate"] = nullptr;
         }
+        const std::size_t resolved_lifetime =
+            tm.acked_total + tm.dead_total + tm.permanently_invalid;
+        result["acceptedYieldRatioLifetime"] = resolved_lifetime > 0
+            ? nlohmann::json(static_cast<double>(tm.acked_total) /
+                             static_cast<double>(resolved_lifetime))
+            : nlohmann::json(nullptr);
     }
 
     // --- Fatal durability state (review finding 6) ---
@@ -169,7 +194,8 @@ std::string getGpuStatsJson() {
 nlohmann::json getMinerDashboardData() {
     nlohmann::json result;
     nlohmann::json gpuArray = nlohmann::json::array();
-    double gpuHashrate = 0.0;
+    double gpuHashrate = 0.0;         // last ~60 s: what the console shows
+    double gpuAverageHashrate = 0.0;  // since start
     std::set<int> devices;
 
     const auto nowSteady = std::chrono::steady_clock::now();
@@ -186,11 +212,16 @@ nlohmann::json getMinerDashboardData() {
             gpu["name"] = info.name;
             gpu["memory_gib"] = info.memory;
             gpu["memory_used_percent"] = info.usingMemory * 100.0;
-            gpu["hashrate"] = info.hashrate;
+            // `hashrate` is the recent rate so every reader of this field (the console, the
+            // LED panel) sees a drop within a minute; the since-start figure moves to
+            // `average_hashrate`.
+            gpu["hashrate"] = info.recentHashrate;
+            gpu["average_hashrate"] = info.hashrate;
             gpu["hash_count"] = info.hashCount;
             gpuArray.push_back(std::move(gpu));
             devices.insert(info.index);
-            gpuHashrate += info.hashrate;
+            gpuHashrate += info.recentHashrate;
+            gpuAverageHashrate += info.hashrate;
         }
     }
 
@@ -217,7 +248,9 @@ nlohmann::json getMinerDashboardData() {
         {"cpu_workers", globalCpuWorkers.load()},
         {"gpu_hashrate", gpuHashrate},
         {"cpu_hashrate", cpuHashrate},
-        {"total_hashrate", gpuHashrate + cpuHashrate}
+        {"total_hashrate", gpuHashrate + cpuHashrate},
+        {"average_hashrate", gpuAverageHashrate + cpuHashrate},
+        {"hashrate_window_seconds", 60}
     };
     result["finds"] = {
         {"xnm", globalNormalBlockCount.load() + globalSuperBlockCount.load()},
